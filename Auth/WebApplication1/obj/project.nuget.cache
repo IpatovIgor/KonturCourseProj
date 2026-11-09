@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "aFzcdyy1MWg=",
+  "dgSpecHash": "Rol865T3BAk=",
   "success": true,
-  "projectFilePath": "C:\\Users\\Игорь\\RiderProjects\\Auth\\WebApplication1\\WebApplication1.csproj",
+  "projectFilePath": "C:\\KonturCourseProj\\Auth\\WebApplication1\\WebApplication1.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Игорь\\.nuget\\packages\\bcrypt.net-next\\4.2.0\\bcrypt.net-next.4.2.0.nupkg.sha512",
     "C:\\Users\\Игорь\\.nuget\\packages\\castle.core\\5.2.1\\castle.core.5.2.1.nupkg.sha512",

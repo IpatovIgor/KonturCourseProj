@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const authApi = axios.create({
-  baseURL: 'http://localhost:8081/api/auth',
+  baseURL: 'http://localhost:5160/api/auth',
 });
 
 const habitsApi = axios.create({
@@ -31,8 +31,8 @@ habitsApi.interceptors.response.use(
 export const login = (email, password) => 
   authApi.post('/login', { email, password }).then(res => res.data.token);
 
-export const register = (email, password) => 
-  authApi.post('/register', { email, password }).then(res => res.data.token);
+export const register = (nickname, email, password) =>
+    authApi.post('/register', { nickname, email, password }).then(res => res.data.token);
 
 export const getHabits = () => 
   habitsApi.get('').then(res => res.data);

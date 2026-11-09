@@ -2132,11 +2132,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Игорь\\RiderProjects\\Auth\\WebApplication1\\WebApplication1.csproj",
+      "projectUniqueName": "C:\\KonturCourseProj\\Auth\\WebApplication1\\WebApplication1.csproj",
       "projectName": "WebApplication1",
-      "projectPath": "C:\\Users\\Игорь\\RiderProjects\\Auth\\WebApplication1\\WebApplication1.csproj",
+      "projectPath": "C:\\KonturCourseProj\\Auth\\WebApplication1\\WebApplication1.csproj",
       "packagesPath": "C:\\Users\\Игорь\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Игорь\\RiderProjects\\Auth\\WebApplication1\\obj\\",
+      "outputPath": "C:\\KonturCourseProj\\Auth\\WebApplication1\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\Игорь\\AppData\\Roaming\\NuGet\\NuGet.Config",

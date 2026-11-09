@@ -7,22 +7,27 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Подключаем настройки из appsettings.json
 builder.Services.Configure<MongoDbSettings>(
     builder.Configuration.GetSection("MongoDbSettings"));
 
 builder.Services.Configure<JwtSettings>(
     builder.Configuration.GetSection("JwtSettings"));
 
-// 2. Регистрируем наши сервисы и репозиторий
-// ВАЖНО: Регистрируем интерфейс IUserRepository, а реализацией назначаем UserRepository
 builder.Services.AddSingleton<IUserRepository, UserRepository>();
 builder.Services.AddScoped<AuthService>();
 
-// 3. Добавляем поддержку контроллеров
 builder.Services.AddControllers();
 
-// 4. Настройка JWT Аутентификации
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactApp", policy =>
+    {
+        policy.WithOrigins("http://localhost:5173")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
 var jwtSettings = builder.Configuration.GetSection("JwtSettings").Get<JwtSettings>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -39,7 +44,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// 5. Добавляем Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -52,7 +56,6 @@ builder.Services.AddSwaggerGen(c =>
 
 var app = builder.Build();
 
-// 6. Включаем Swagger с принудительным OpenAPI 2.0 (чтобы UI не выдавал ошибку)
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger(c =>
@@ -68,12 +71,11 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// 7. Подключаем аутентификацию и авторизацию
+app.UseCors("AllowReactApp");
+
 app.UseAuthentication();
 app.UseAuthorization();
 
-// 8. Включаем маршрутизацию запросов к контроллерам
 app.MapControllers();
 
-// 9. Запускаем приложение
 app.Run();
