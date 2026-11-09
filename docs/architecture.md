@@ -87,6 +87,14 @@ sequenceDiagram
 
 HTTP-тесты привычек используют реальный JWT, фиксированное время и временную базу на отдельном replica set. Перед запуском `dotnet test WebApplication1.sln` из `Auth` в изолированной копии укажите строку подключения в `KONTUR_TEST_MONGO_URI`. Тесты создают и удаляют собственные базы с префиксом `kontur_habits_tests_`. Без этой переменной интеграционные тесты пропускаются.
 
+Модульные тесты `HabitServiceTests` используют xUnit, Moq и FluentAssertions и запускаются без MongoDB. Чтобы замерить покрытие бизнес-правил привычек, выполните из `Auth` в изолированной копии:
+
+```powershell
+dotnet test WebApplication1.sln --filter "FullyQualifiedName~HabitServiceTests" --collect "XPlat Code Coverage" -- "DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Include=[WebApplication1]BackEnd.Services.HabitService*"
+```
+
+В отчёте `coverage.cobertura.xml` под `BackEnd.Tests/TestResults` поля `line-rate` и `branch-rate` показывают долю покрытых строк и ветвей `HabitService`. Цель для обоих показателей выше 70%.
+
 Для запуска приложения задайте `JwtSettings__Secret` с собственным случайным ключом подписи длиной от 32 байт и `MongoDbSettings__ConnectionString` для [MongoDB replica set](database.md). Приложение проверяет ключ при запуске.
 
 В первую версию входят личные привычки, недельное расписание, отметки, архив и статистика. Восстановление из архива, физическое удаление, уведомления, числовые цели и изменение часового пояса после первой привычки остаются за рамками первой версии.

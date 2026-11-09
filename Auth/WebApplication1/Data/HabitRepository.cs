@@ -5,7 +5,7 @@ using MongoDB.Driver;
 
 namespace BackEnd.Data;
 
-public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSettings> settings)
+public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSettings> settings) : IHabitRepository
 {
     private readonly IMongoCollection<User> _users = database.GetCollection<User>(settings.Value.UsersCollectionName);
     private readonly IMongoCollection<Habit> _habits = database.GetCollection<Habit>("habits");

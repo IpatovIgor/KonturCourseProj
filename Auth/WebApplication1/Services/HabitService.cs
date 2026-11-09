@@ -5,7 +5,7 @@ using MongoDB.Bson;
 
 namespace BackEnd.Services;
 
-public sealed class HabitService(HabitRepository repository, IUserRepository users, TimeProvider clock)
+public sealed class HabitService(IHabitRepository repository, IUserRepository users, TimeProvider clock)
 {
     public async Task<User> GetOwnerAsync(string? subject, CancellationToken ct)
     {

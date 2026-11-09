@@ -36,6 +36,7 @@ builder.Services.AddSingleton(services =>
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<IUserRepository>(services => services.GetRequiredService<UserRepository>());
 builder.Services.AddSingleton<HabitRepository>();
+builder.Services.AddSingleton<IHabitRepository>(services => services.GetRequiredService<HabitRepository>());
 builder.Services.AddHostedService<MongoIndexInitializer>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<HabitService>();
