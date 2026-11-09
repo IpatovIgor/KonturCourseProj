@@ -106,7 +106,7 @@ export default function HabitDetails({ id, api, today, revision, pending, onBack
         {habit.nextSchedule && <p className="notice">С {displayDate(habit.nextSchedule.effectiveFrom)} · {displayDays(habit.nextSchedule.daysOfWeek)}</p>}
         {archived ? <p className="muted">Привычка в архиве.</p> : (
           <div className="actions">
-            <button type="button" className="primary" disabled={pending || habitQuery.loading} onClick={() => setEditing(true)}>Редактировать</button>
+            <button type="button" className="primary" disabled={pending || habitQuery.loading || Boolean(habitQuery.error)} onClick={() => setEditing(true)}>Редактировать</button>
             <button type="button" className="danger" disabled={pending || habitQuery.loading} onClick={() => {
               if (window.confirm('Переместить в архив?')) onArchive()
             }}>Архивировать</button>

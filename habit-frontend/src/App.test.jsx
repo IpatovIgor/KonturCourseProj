@@ -173,6 +173,32 @@ describe('Привычки', () => {
     expect(JSON.parse(request('PUT /api/habits/abc').data).daysOfWeek).toEqual([3])
   })
 
+  it('блокирует редактирование после сбоя обновления карточки и открывает свежие данные после повтора', async () => {
+    const updatedHabit = { ...habit, name: 'Вечернее чтение' }
+    const load = vi.fn()
+      .mockResolvedValueOnce(reply(habit))
+      .mockRejectedValueOnce(failure(500, { title: 'Не удалось обновить карточку' }))
+      .mockResolvedValue(reply(updatedHabit))
+    mockApi({
+      'GET /api/habits/abc': load,
+      'PUT /api/habits/abc': () => reply(updatedHabit),
+    })
+
+    signedIn()
+    fireEvent.click(await waitButton('Чтение'))
+    fireEvent.click(await waitButton('Редактировать'))
+    fill('Название', updatedHabit.name)
+    click('Сохранить')
+
+    await screen.findByText('Изменения сохранены.')
+    await screen.findByText('Не удалось обновить карточку')
+    expect(screen.getByRole('button', { name: 'Редактировать' }).disabled).toBe(true)
+
+    click('Повторить загрузку')
+    fireEvent.click(await waitButton('Редактировать'))
+    expect(screen.getByLabelText('Название').value).toBe(updatedHabit.name)
+  })
+
   it('даёт отметить прошедший запланированный день и передаёт обе границы периода', async () => {
     signedIn()
     fireEvent.click(await waitButton('Чтение'))
