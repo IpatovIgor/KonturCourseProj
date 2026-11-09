@@ -1,194 +1,94 @@
-import { useState, useEffect } from 'react';
-import {
-  login, register, getHabits, createHabit,
-  deleteHabit, checkinHabit, getStats
-} from './api';
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createHabitsApi, errorMessage, isValidToken, login, register } from './api.js'
+import HabitTracker from './HabitTracker.jsx'
 
-function AuthScreen({ onLogin }) {
-  const [isLogin, setIsLogin] = useState(true);
-  const [nickname, setNickname] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+function AuthScreen({ onLogin, sessionNotice }) {
+  const [registering, setRegistering] = useState(false)
+  const [nickName, setNickName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const [pending, setPending] = useState(false)
+  const submitting = useRef(false)
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    try {
-      const token = isLogin
-          ? await login(email, password)
-          : await register(nickname, email, password);
-      localStorage.setItem('token', token);
-      onLogin();
-    } catch (err) {
-      setError(err.response?.data?.error || err.response?.data?.title || err.response?.data?.message || 'Ошибка входа');
+  async function submit(event) {
+    event.preventDefault()
+    if (submitting.current) return
+
+    const address = email.trim()
+    const name = nickName.trim()
+    if (registering && !name) {
+      setError('Введите никнейм.')
+      return
     }
-  };
-
-  return (
-      <div style={{ maxWidth: 350, margin: '100px auto', fontFamily: 'sans-serif' }}>
-        <h2>{isLogin ? 'Вход' : 'Регистрация'}</h2>
-        {error && <p style={{ color: 'red', fontSize: 14 }}>{error}</p>}
-
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {!isLogin && (
-              <input
-                  type="text"
-                  placeholder="Никнейм"
-                  value={nickname}
-                  onChange={e => setNickname(e.target.value)}
-                  required
-                  style={{ padding: 8 }}
-              />
-          )}
-          <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              style={{ padding: 8 }}
-          />
-          <input
-              type="password"
-              placeholder="Пароль (мин. 6 символов)"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              style={{ padding: 8 }}
-          />
-          <button type="submit" style={{ padding: 10, cursor: 'pointer', background: '#007bff', color: 'white', border: 'none' }}>
-            {isLogin ? 'Войти' : 'Создать аккаунт'}
-          </button>
-        </form>
-
-        <button
-            onClick={() => {
-              setIsLogin(!isLogin);
-              setNickname('');
-              setError('');
-            }}
-            style={{ marginTop: 15, background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', textDecoration: 'underline' }}
-        >
-          {isLogin ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
-        </button>
-      </div>
-  );
-}
-
-export default function App() {
-  const [isAuth, setIsAuth] = useState(!!localStorage.getItem('token'));
-  const [habits, setHabits] = useState([]);
-  const [stats, setStats] = useState({});
-  const [newHabit, setNewHabit] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const loadData = async () => {
-    setLoading(true);
+    submitting.current = true
+    setPending(true)
+    setError('')
+    setNotice('')
+    let accountCreated = false
     try {
-      const list = await getHabits();
-      setHabits(list);
-
-      const statsMap = {};
-      for (let h of list) {
-        statsMap[h.id] = await getStats(h.id);
+      if (registering) {
+        await register(name, address, password)
+        accountCreated = true
       }
-      setStats(statsMap);
-    } catch (e) {
-      console.error(e);
+      onLogin(await login(address, password))
+    } catch (requestError) {
+      if (accountCreated) {
+        setRegistering(false)
+        setPassword('')
+        setNotice('Аккаунт создан. Войдите с указанным email.')
+      }
+      setError(errorMessage(requestError))
     } finally {
-      setLoading(false);
+      submitting.current = false
+      setPending(false)
     }
-  };
+  }
 
-  useEffect(() => {
-    if (isAuth) loadData();
-  }, [isAuth]);
-
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    setIsAuth(false);
-  };
-
-  const handleAdd = async (e) => {
-    e.preventDefault();
-    if (!newHabit.trim()) return;
-    try {
-      await createHabit(newHabit);
-      setNewHabit('');
-      loadData();
-    } catch (e) {
-      alert('Ошибка создания');
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!window.confirm('Удалить привычку?')) return;
-    await deleteHabit(id);
-    loadData();
-  };
-
-  const handleCheckin = async (id) => {
-    try {
-      await checkinHabit(id);
-      loadData();
-    } catch (e) {
-      alert(e.response?.data?.error || 'Уже отмечено сегодня');
-    }
-  };
-
-  if (!isAuth) {
-    return <AuthScreen onLogin={() => setIsAuth(true)} />;
+  function switchMode() {
+    setRegistering(!registering)
+    setNotice('')
+    setError('')
   }
 
   return (
-      <div style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'sans-serif' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>Мои привычки</h2>
-          <button onClick={handleLogout} style={{ cursor: 'pointer', padding: 5 }}>Выйти</button>
-        </div>
-
-        {/* Форма добавления */}
-        <form onSubmit={handleAdd} style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-          <input
-              placeholder="Новая привычка (например, Пить воду)..."
-              value={newHabit}
-              onChange={e => setNewHabit(e.target.value)}
-              style={{ flex: 1, padding: 8 }}
-          />
-          <button type="submit" style={{ padding: '8px 15px', background: 'green', color: 'white', border: 'none', cursor: 'pointer' }}>
-            Добавить
-          </button>
+    <main className="auth-page">
+      <section className="panel auth-panel">
+        <p className="eyebrow">Трекер привычек</p>
+        <h1>{registering ? 'Регистрация' : 'Вход'}</h1>
+        <p className="muted">{registering ? 'Создайте аккаунт, чтобы начать.' : 'Отмечайте маленькие шаги каждый день.'}</p>
+        {(notice || sessionNotice) && <p className="notice" role="status">{notice || sessionNotice}</p>}
+        {error && <p className="error" role="alert">{error}</p>}
+        <form className="form-stack" onSubmit={submit}>
+          {registering && <label>Никнейм<input required autoComplete="nickname" value={nickName} onChange={(event) => setNickName(event.target.value)} disabled={pending} /></label>}
+          <label>Email<input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} disabled={pending} /></label>
+          <label>Пароль<input required type="password" autoComplete={registering ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} disabled={pending} /></label>
+          <button className="primary" disabled={pending}>{pending ? 'Подождите…' : registering ? 'Зарегистрироваться' : 'Войти'}</button>
         </form>
+        <button type="button" className="text-button auth-switch" onClick={switchMode} disabled={pending}>{registering ? 'Уже есть аккаунт' : 'Создать аккаунт'}</button>
+      </section>
+    </main>
+  )
+}
 
-        {loading && <p>Загрузка...</p>}
-        {!loading && habits.length === 0 && <p>Пока нет привычек. Добавь первую!</p>}
+export default function App() {
+  const [{ session, notice }, setAuth] = useState(() => {
+    const token = localStorage.getItem('token')
+    return { session: isValidToken(token) ? { token } : null, notice: '' }
+  })
 
-        {/* Список привычек */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
-          {habits.map(h => {
-            const s = stats[h.id] || { streak: 0, completionRate: 0 };
-            return (
-                <div key={h.id} style={{ border: '1px solid #ddd', borderRadius: 8, padding: 15 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <h3 style={{ margin: 0 }}>{h.name}</h3>
-                    <button onClick={() => handleDelete(h.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer' }}>✕</button>
-                  </div>
+  useEffect(() => {
+    if (session) localStorage.setItem('token', session.token)
+    else localStorage.removeItem('token')
+  }, [session])
 
-                  <div style={{ margin: '10px 0', fontSize: 14, color: '#555' }}>
-                    🔥 Серия: <b>{s.streak}</b> дн. | 📊 Выполнение: <b>{s.completionRate}%</b>
-                  </div>
+  const api = useMemo(() => session && createHabitsApi(session.token, () => {
+    setAuth((current) => current.session === session
+      ? { session: null, notice: 'Сессия завершилась. Войдите снова.' }
+      : current)
+  }), [session])
 
-                  <button
-                      onClick={() => handleCheckin(h.id)}
-                      style={{ padding: '6px 12px', background: '#ffffff', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer' }}
-                  >
-                    Отметить на сегодня
-                  </button>
-                </div>
-            );
-          })}
-        </div>
-      </div>
-  );
+  if (!session) return <AuthScreen onLogin={(token) => setAuth({ session: { token }, notice: '' })} sessionNotice={notice} />
+  return <HabitTracker api={api} onLogout={() => setAuth({ session: null, notice: '' })} />
 }
