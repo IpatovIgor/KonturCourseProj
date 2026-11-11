@@ -8,3 +8,8 @@
 *.user
 *.suo
 *.rsuser
+
+# Local environment settings
+.env
+.env.*
+!.env.example
