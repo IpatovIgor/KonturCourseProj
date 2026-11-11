@@ -1,0 +1,10 @@
+# .NET build and test output
+[Bb]in/
+[Oo]bj/
+[Tt]est[Rr]esults/
+
+# Local Visual Studio and Rider settings
+.vs/
+*.user
+*.suo
+*.rsuser
