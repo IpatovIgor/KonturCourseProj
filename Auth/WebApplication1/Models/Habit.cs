@@ -38,6 +38,11 @@ public sealed class Habit
     [BsonElement("archivedDate")]
     public string? ArchivedDate { get; set; }
 
+    [BsonElement("reminderEnabled")]
+    public bool ReminderEnabled { get; set; }
+    [BsonElement("reminderLocalTime")]
+    public string ReminderLocalTime { get; set; } = "20:00";
+
     [BsonElement("revision")]
     public long Revision { get; set; }
 }

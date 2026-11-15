@@ -3,16 +3,19 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using BackEnd.Controllers;
+using HabitTracker.Contracts;
+using HabitTracker.Messaging;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace BackEnd.Tests.Controllers;
 
-public sealed class HabitsHttpTests
+public sealed partial class HabitsHttpTests
 {
     [MongoFact]
     public async Task CreateAndEdit_ReturnTheSameTimestampsAsARead()
@@ -189,6 +192,150 @@ public sealed class HabitsHttpTests
         Assert.Equal(HttpStatusCode.Conflict, cancel.StatusCode);
     }
 
+    [MongoFact]
+    public async Task NotificationSettings_RequireJwtAndPreserveDefaultsAndOwnership()
+    {
+        using var app = new HabitsApplication();
+        using var client = app.CreateClient();
+        const string summary = "/api/profile/summary-settings";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(summary)).StatusCode);
+        await LoginAsync(client, "settings-owner@example.com");
+        var habit = await CreateHabitAsync(client);
+        var reminder = habit + "/reminder";
+        var db = app.Services.GetRequiredService<IMongoDatabase>();
+        await db.GetCollection<BsonDocument>("habits").UpdateManyAsync(FilterDefinition<BsonDocument>.Empty,
+            Builders<BsonDocument>.Update.Unset("reminderEnabled").Unset("reminderLocalTime"));
+        await db.GetCollection<BsonDocument>("users").UpdateManyAsync(FilterDefinition<BsonDocument>.Empty,
+            Builders<BsonDocument>.Update.Unset("summaryEnabled").Unset("summaryLocalTime").Unset("summaryRevision"));
+
+        await AssertSettingsAsync(await client.GetAsync(reminder), false, "20:00");
+        await AssertSettingsAsync(await client.GetAsync(summary), false, "21:00");
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await client.PutAsJsonAsync(reminder, new { enabled = true, localTime = "24:00" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await client.PutAsJsonAsync(summary, new { localTime = "07:00" })).StatusCode);
+        await AssertSettingsAsync(await client.PutAsJsonAsync(reminder, new { enabled = true, localTime = "00:00" }), true, "00:00");
+        await AssertSettingsAsync(await client.PutAsJsonAsync(reminder, new { enabled = true, localTime = "00:00" }), true, "00:00");
+        await AssertSettingsAsync(await client.PutAsJsonAsync(summary, new { enabled = true, localTime = "23:59" }), true, "23:59");
+
+        using var relogin = await client.PostAsJsonAsync("/api/auth/login",
+            new { email = "settings-owner@example.com", password = "test-password-only" });
+        Assert.Equal(HttpStatusCode.OK, relogin.StatusCode);
+        await AssertSettingsAsync(await client.GetAsync(summary), true, "23:59");
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(habit)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await client.PutAsJsonAsync(reminder, new { enabled = false, localTime = "20:00" })).StatusCode);
+        using var other = app.CreateClient();
+        await LoginAsync(other, "settings-other@example.com");
+        Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync(reminder)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await other.PutAsJsonAsync(reminder, new { enabled = true, localTime = "20:00" })).StatusCode);
+    }
+
+    [MongoFact]
+    public async Task Outbox_RecordsOnlyChangesAndRollsBackWhenEventCannotBeInserted()
+    {
+        using var app = new HabitsApplication();
+        using var client = app.CreateClient();
+        await LoginAsync(client, "outbox@example.com");
+        var path = await CreateHabitAsync(client);
+        var completion = path + "/completions/2026-11-02";
+        var edit = new { name = "Новое название", daysOfWeek = new[] { 1, 3, 5 } };
+        for (var i = 0; i < 2; i++)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync(path, edit)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync(path + "/reminder",
+                new { enabled = true, localTime = "12:00" })).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync("/api/profile/summary-settings",
+                new { enabled = true, localTime = "21:00" })).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync(completion, null)).StatusCode);
+        }
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(completion)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(completion)).StatusCode);
+        var database = app.Services.GetRequiredService<IMongoDatabase>();
+        var events = database.GetCollection<BsonDocument>("outboxEvents");
+        var payloads = (await events.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync())
+            .Select(item => item["payload"].AsBsonDocument).ToArray();
+        Assert.Equal(new[] { "created", "edited", "reminderChanged", "completionChanged", "completionChanged" },
+            payloads.Where(payload => payload.Contains("change")).OrderBy(payload => payload["revision"].ToInt64())
+                .Select(payload => payload["change"].AsString));
+        Assert.Equal(new long[] { 0, 1, 2, 3, 4 }, payloads.Where(payload => payload.Contains("change"))
+            .Select(payload => payload["revision"].ToInt64()).Order());
+        Assert.Equal(1, Assert.Single(payloads.Where(payload => !payload.Contains("change")))["revision"].ToInt64());
+
+        await database.RunCommandAsync<BsonDocument>(new BsonDocument
+        {
+            { "collMod", "outboxEvents" },
+            { "validator", new BsonDocument("contract", "never-a-contract") }
+        });
+        using var failed = await client.DeleteAsync(path);
+        Assert.Equal(HttpStatusCode.InternalServerError, failed.StatusCode);
+        var problem = JsonNode.Parse(await failed.Content.ReadAsStringAsync())!.AsObject();
+        Assert.False(string.IsNullOrEmpty(problem["traceId"]?.GetValue<string>()));
+        Assert.False(problem.ContainsKey("detail"));
+        Assert.Null((await ReadAsync(await client.GetAsync(path)))["archivedAt"]);
+        await database.RunCommandAsync<BsonDocument>(new BsonDocument
+        {
+            { "collMod", "outboxEvents" }, { "validator", new BsonDocument() }
+        });
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(path)).StatusCode);
+        var archived = await events.Find(Builders<BsonDocument>.Filter.Eq("payload.change", "archived")).SingleAsync();
+        Assert.Equal(5, archived["payload"]["revision"].ToInt64());
+        Assert.Equal("archived", archived["payload"]["status"].AsString);
+    }
+
+    [MongoFact]
+    public async Task DisabledNotifications_HideSettingsRoutes()
+    {
+        using var app = new HabitsApplication(notificationsEnabled: false);
+        using var client = app.CreateClient();
+        await LoginAsync(client, "notifications-disabled@example.com");
+        var habit = await CreateHabitAsync(client);
+        foreach (var path in new[] { habit + "/reminder", "/api/profile/summary-settings" })
+        {
+            using var get = await client.GetAsync(path);
+            using var put = await client.PutAsJsonAsync(path, new { enabled = true, localTime = "12:00" });
+            Assert.Equal(HttpStatusCode.NotFound, get.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, put.StatusCode);
+        }
+    }
+
+    [MongoFact]
+    public async Task DisabledNotifications_HabitWritesKeepExistingOutboxWithoutAppendingEvents()
+    {
+        using var app = new HabitsApplication(notificationsEnabled: false);
+        using var client = app.CreateClient();
+        await LoginAsync(client, "outbox-disabled@example.com");
+        var database = app.Services.GetRequiredService<IMongoDatabase>();
+        var events = database.GetCollection<BsonDocument>("outboxEvents");
+        var correlation = Guid.NewGuid();
+        var previousEvent = new SummarySettingsChangedV1(Guid.NewGuid(), app.Clock.GetUtcNow().UtcDateTime,
+            correlation, ObjectId.GenerateNewId().ToString(), 1, true, "21:00", "Asia/Yekaterinburg");
+        var existing = OutboxEvent.Create(previousEvent, new(correlation, null, null)).ToBsonDocument();
+        await events.InsertOneAsync(existing);
+
+        var path = await CreateHabitAsync(client);
+        using var edited = await client.PutAsJsonAsync(path, new { name = "Чтение", daysOfWeek = new[] { 1, 3, 5 } });
+        Assert.Equal("Чтение", (await ReadAsync(edited))["name"]!.GetValue<string>());
+        var completion = path + "/completions/2026-11-02";
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync(completion, null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(completion)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(path)).StatusCode);
+
+        Assert.Equal(existing, Assert.Single(await events.Find(FilterDefinition<BsonDocument>.Empty).ToListAsync()));
+    }
+
+    private static async Task AssertSettingsAsync(HttpResponseMessage response, bool enabled, string time)
+    {
+        using (response)
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var body = await ReadAsync(response);
+            Assert.Equal(enabled, body["enabled"]!.GetValue<bool>());
+            Assert.Equal(time, body["localTime"]!.GetValue<string>());
+        }
+    }
+
     private static async Task LoginAsync(HttpClient client, string email)
     {
         const string password = "test-password-only";
@@ -216,12 +363,13 @@ public sealed class HabitsHttpTests
         return JsonNode.Parse(content)!.AsObject();
     }
 
-    private sealed class HabitsApplication : WebApplicationFactory<AuthController>
+    private sealed class HabitsApplication(bool useRabbit = false, bool notificationsEnabled = true)
+        : WebApplicationFactory<AuthController>
     {
         private readonly string _connectionString = Environment.GetEnvironmentVariable("KONTUR_TEST_MONGO_URI")!;
         private readonly string _database = "kontur_habits_tests_" + Guid.NewGuid().ToString("N");
 
-        public MutableTimeProvider Clock { get; } = new();
+        public MutableTimeProvider Clock { get; } = new(useRabbit);
 
         public Task<long> CountCompletionsAsync() => new MongoClient(_connectionString).GetDatabase(_database)
             .GetCollection<MongoDB.Bson.BsonDocument>("habitCompletions")
@@ -229,6 +377,12 @@ public sealed class HabitsHttpTests
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            if (useRabbit)
+            {
+                builder.UseSetting("RabbitMq:Host", Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_URI"));
+                builder.UseSetting("RabbitMq:Username", Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_USER"));
+                builder.UseSetting("RabbitMq:Password", Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_PASSWORD"));
+            }
             builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["MongoDbSettings:ConnectionString"] = _connectionString,
@@ -236,7 +390,9 @@ public sealed class HabitsHttpTests
                 ["JwtSettings:Secret"] = "habits-test-signing-key-12345678901234567890",
                 ["JwtSettings:Issuer"] = "habits-tests",
                 ["JwtSettings:Audience"] = "habits-tests",
-                ["JwtSettings:ExpiryMinutes"] = "60"
+                ["JwtSettings:ExpiryMinutes"] = "60",
+                ["WorkerApi:SharedKey"] = "worker-test-key",
+                ["Features:NotificationsEnabled"] = notificationsEnabled.ToString()
             }));
             builder.ConfigureServices(services =>
             {
@@ -253,9 +409,19 @@ public sealed class HabitsHttpTests
         }
     }
 
-    private sealed class MutableTimeProvider : TimeProvider
+    private sealed class MutableTimeProvider(bool advance) : TimeProvider
     {
-        public DateTimeOffset Now { get; set; } = new(2026, 11, 1, 19, 30, 0, TimeSpan.Zero);
+        private readonly long _startedAt = System.GetTimestamp();
+        private long _ticks = advance ? System.GetUtcNow().UtcTicks
+            : new DateTimeOffset(2026, 11, 1, 19, 30, 0, TimeSpan.Zero).UtcTicks;
+
+        private long ElapsedTicks => advance ? System.GetElapsedTime(_startedAt).Ticks : 0;
+
+        public DateTimeOffset Now
+        {
+            get => new(Interlocked.Read(ref _ticks) + ElapsedTicks, TimeSpan.Zero);
+            set => Interlocked.Exchange(ref _ticks, value.UtcTicks - ElapsedTicks);
+        }
 
         public override DateTimeOffset GetUtcNow() => Now;
     }

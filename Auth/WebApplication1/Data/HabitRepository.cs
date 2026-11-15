@@ -1,18 +1,24 @@
 using BackEnd.Models;
+using BackEnd.Services;
+using HabitTracker.Messaging;
 using Microsoft.Extensions.Options;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace BackEnd.Data;
 
-public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSettings> settings) : IHabitRepository
+public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSettings> settings,
+    MongoOutbox outbox, TimeProvider clock, RequestEventContext events,
+    IOptions<NotificationFeatures> features) : IHabitRepository
 {
     private readonly IMongoCollection<User> _users = database.GetCollection<User>(settings.Value.UsersCollectionName);
     private readonly IMongoCollection<Habit> _habits = database.GetCollection<Habit>("habits");
     private readonly IMongoCollection<HabitCompletion> _marks = database.GetCollection<HabitCompletion>("habitCompletions");
 
-    public Task<Habit> CreateAsync(ObjectId owner, Func<User?, Habit> build, CancellationToken ct) =>
-        InTransactionAsync(async (session, token) =>
+    public Task<Habit> CreateAsync(ObjectId owner, Func<User?, Habit> build, CancellationToken ct)
+    {
+        var context = events.Capture();
+        return database.InSnapshotAsync(async (session, token) =>
         {
             var filter = Builders<User>.Filter.Eq(user => user.Id, owner.ToString());
             var user = await _users.Find(session, filter).FirstOrDefaultAsync(token);
@@ -25,8 +31,11 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
             }
 
             await _habits.InsertOneAsync(session, habit, cancellationToken: token);
+            if (features.Value.NotificationsEnabled)
+                await AddEventAsync(session, habit, user?.TimeZoneId ?? User.DefaultTimeZoneId, "created", context, token);
             return habit;
         }, ct);
+    }
 
     public async Task<Habit?> GetAsync(ObjectId owner, ObjectId id, CancellationToken ct) =>
         await _habits.Find(OwnedHabit(owner, id)).FirstOrDefaultAsync(ct);
@@ -51,11 +60,14 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
         _habits.Find(OwnedHabits(owner) & Builders<Habit>.Filter.Eq(habit => habit.Status, "active"))
             .Sort(HabitSort).ToListAsync(ct);
 
-    public async Task<bool> TrySaveAsync(Habit habit, CancellationToken ct)
+    public Task<bool> TrySaveAsync(Habit habit, CancellationToken ct)
     {
-        var filter = OwnedHabit(habit.UserId, habit.Id)
-            & Builders<Habit>.Filter.Eq(item => item.Revision, habit.Revision)
-            & Builders<Habit>.Filter.Eq(item => item.Status, "active");
+        var filters = Builders<Habit>.Filter;
+        var revision = filters.Eq(item => item.Revision, habit.Revision);
+        if (habit.Revision == 0)
+            revision |= filters.Exists(item => item.Revision, false);
+
+        var filter = OwnedHabit(habit.UserId, habit.Id) & revision & filters.Eq(item => item.Status, "active");
         var update = Builders<Habit>.Update.Set(item => item.ScheduleVersions, habit.ScheduleVersions)
             .Set(item => item.UpdatedAt, habit.UpdatedAt)
             .Inc(item => item.Revision, 1);
@@ -63,8 +75,43 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
             ? update.Set(item => item.Status, habit.Status).Set(item => item.ArchivedAt, habit.ArchivedAt)
                 .Set(item => item.ArchivedDate, habit.ArchivedDate)
             : update.Set(item => item.Name, habit.Name).Set(item => item.Description, habit.Description);
-        var result = await _habits.UpdateOneAsync(filter, update, cancellationToken: ct);
-        return result.MatchedCount == 1;
+        var change = habit.Status == "archived" ? "archived" : "edited";
+        var context = events.Capture();
+        return database.InSnapshotAsync(async (session, token) =>
+        {
+            var saved = await _habits.FindOneAndUpdateAsync(session, filter, update,
+                new FindOneAndUpdateOptions<Habit> { ReturnDocument = ReturnDocument.After }, token);
+            if (saved is null)
+                return false;
+
+            await AddEventAsync(session, saved, change, context, token);
+            return true;
+        }, ct);
+    }
+
+    public Task<Habit?> SaveReminderAsync(ObjectId owner, ObjectId id, NotificationSettings settings, CancellationToken ct)
+    {
+        var context = events.Capture();
+        return database.InSnapshotAsync<Habit?>(async (session, token) =>
+        {
+            var filter = OwnedHabit(owner, id);
+            var habit = await _habits.Find(session, filter).FirstOrDefaultAsync(token);
+            if (habit is null)
+                return null;
+            if (habit.Status == "archived")
+                throw HabitApiException.Archived();
+            if (habit.ReminderEnabled == settings.Enabled && habit.ReminderLocalTime == settings.LocalTime)
+                return habit;
+
+            var update = Builders<Habit>.Update.Set(item => item.ReminderEnabled, settings.Enabled)
+                .Set(item => item.ReminderLocalTime, settings.LocalTime)
+                .Set(item => item.UpdatedAt, clock.GetUtcNow().UtcDateTime)
+                .Inc(item => item.Revision, 1);
+            var saved = await _habits.FindOneAndUpdateAsync(session, filter, update,
+                new FindOneAndUpdateOptions<Habit> { ReturnDocument = ReturnDocument.After }, token);
+            await AddEventAsync(session, saved, "reminderChanged", context, token);
+            return saved;
+        }, ct);
     }
 
     public Task<List<HabitCompletion>> GetCompletionsAsync(
@@ -81,6 +128,7 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
     public async Task SetCompletionAsync(ObjectId owner, ObjectId id, string date, bool completed,
         Func<Habit?, DateTime> validate, CancellationToken ct)
     {
+        var context = events.Capture();
         try
         {
             await WriteAsync();
@@ -91,29 +139,28 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
             await WriteAsync();
         }
 
-        Task<bool> WriteAsync() => InTransactionAsync(async (session, token) =>
+        Task<bool> WriteAsync() => database.InSnapshotAsync(async (session, token) =>
         {
             var habitFilter = OwnedHabit(owner, id);
             var habit = await _habits.Find(session, habitFilter).FirstOrDefaultAsync(token);
             var now = validate(habit);
 
-            // Touch the habit so MongoDB detects a concurrent archive or schedule edit.
-            await _habits.UpdateOneAsync(session, habitFilter, Builders<Habit>.Update.Inc(item => item.Revision, 1),
-                cancellationToken: token);
-
             var filter = Builders<HabitCompletion>.Filter;
             var key = filter.Eq(mark => mark.UserId, owner) & filter.Eq(mark => mark.HabitId, id)
                 & filter.Eq(mark => mark.Date, date);
-            if (completed)
-            {
-                await _marks.UpdateOneAsync(session, key, Builders<HabitCompletion>.Update.SetOnInsert(mark => mark.CreatedAt, now),
-                    new UpdateOptions { IsUpsert = true }, token);
-            }
-            else
-            {
-                await _marks.DeleteOneAsync(session, key, cancellationToken: token);
-            }
+            var changed = completed
+                ? (await _marks.UpdateOneAsync(session, key,
+                    Builders<HabitCompletion>.Update.SetOnInsert(mark => mark.CreatedAt, now),
+                    new UpdateOptions { IsUpsert = true }, token)).UpsertedId is not null
+                : (await _marks.DeleteOneAsync(session, key, cancellationToken: token)).DeletedCount == 1;
+            if (!changed)
+                return false;
 
+            // Writing the habit makes concurrent archive/edit conflict with this mark transaction.
+            var saved = await _habits.FindOneAndUpdateAsync(session, habitFilter,
+                Builders<Habit>.Update.Inc(item => item.Revision, 1),
+                new FindOneAndUpdateOptions<Habit> { ReturnDocument = ReturnDocument.After }, token);
+            await AddEventAsync(session, saved, "completionChanged", context, token);
             return true;
         }, ct);
     }
@@ -132,13 +179,19 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
         ], ct);
     }
 
-    private async Task<T> InTransactionAsync<T>(
-        Func<IClientSessionHandle, CancellationToken, Task<T>> write, CancellationToken ct)
+    private async Task AddEventAsync(IClientSessionHandle session, Habit habit, string change,
+        EventContext context, CancellationToken ct)
     {
-        using var session = await database.Client.StartSessionAsync(cancellationToken: ct);
-        return await session.WithTransactionAsync(write,
-            new TransactionOptions(readConcern: ReadConcern.Snapshot, writeConcern: WriteConcern.WMajority), ct);
+        if (!features.Value.NotificationsEnabled)
+            return;
+
+        var user = await _users.Find(session, item => item.Id == habit.UserId.ToString()).FirstOrDefaultAsync(ct);
+        await AddEventAsync(session, habit, user?.TimeZoneId ?? User.DefaultTimeZoneId, change, context, ct);
     }
+
+    private Task AddEventAsync(IClientSessionHandle session, Habit habit, string zone, string change,
+        EventContext context, CancellationToken ct) => outbox.InsertAsync(session,
+        HabitScheduleSnapshot.From(habit, zone).AsEvent(change, clock.GetUtcNow().UtcDateTime, context), context, ct);
 
     private static FilterDefinition<Habit> OwnedHabits(ObjectId owner) =>
         Builders<Habit>.Filter.Eq(habit => habit.UserId, owner);

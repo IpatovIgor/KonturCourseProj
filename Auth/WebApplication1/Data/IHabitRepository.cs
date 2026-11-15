@@ -10,6 +10,7 @@ public interface IHabitRepository
     Task<(List<Habit> Items, long Total)> GetPageAsync(
         ObjectId owner, string status, int page, int pageSize, CancellationToken ct);
     Task<List<Habit>> GetActiveAsync(ObjectId owner, CancellationToken ct);
+    Task<Habit?> SaveReminderAsync(ObjectId owner, ObjectId id, NotificationSettings settings, CancellationToken ct);
     Task<bool> TrySaveAsync(Habit habit, CancellationToken ct);
     Task<List<HabitCompletion>> GetCompletionsAsync(
         ObjectId owner, ObjectId? habitId, string from, string to, CancellationToken ct);

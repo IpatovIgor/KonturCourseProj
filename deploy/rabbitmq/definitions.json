@@ -1,0 +1,116 @@
+{
+  "vhosts": [
+    {
+      "name": "habit-tracker"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "habit-changed-v1",
+      "vhost": "habit-tracker",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "summary-settings-changed-v1",
+      "vhost": "habit-tracker",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "notification-ready-v1",
+      "vhost": "habit-tracker",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "worker-habit-events-v1",
+      "vhost": "habit-tracker",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "notifications-ready-v1",
+      "vhost": "habit-tracker",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "worker-habit-events-v1",
+      "vhost": "habit-tracker",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "notifications-ready-v1",
+      "vhost": "habit-tracker",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "habit-changed-v1",
+      "vhost": "habit-tracker",
+      "destination": "worker-habit-events-v1",
+      "destination_type": "exchange",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "summary-settings-changed-v1",
+      "vhost": "habit-tracker",
+      "destination": "worker-habit-events-v1",
+      "destination_type": "exchange",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "notification-ready-v1",
+      "vhost": "habit-tracker",
+      "destination": "notifications-ready-v1",
+      "destination_type": "exchange",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "worker-habit-events-v1",
+      "vhost": "habit-tracker",
+      "destination": "worker-habit-events-v1",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "notifications-ready-v1",
+      "vhost": "habit-tracker",
+      "destination": "notifications-ready-v1",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}

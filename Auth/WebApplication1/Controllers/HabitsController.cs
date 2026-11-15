@@ -52,6 +52,20 @@ public sealed class HabitsController(HabitService habits) : ControllerBase
             return NoContent();
         }, ct);
 
+    [HttpGet("{id}/reminder")]
+    [NotificationSettingsEndpoint]
+    public Task<IActionResult> GetReminder(string id, CancellationToken ct)
+    {
+        return RunAsync(async owner => Ok(await habits.GetReminderAsync(owner, ParseId(id), ct)), ct);
+    }
+
+    [HttpPut("{id}/reminder")]
+    [NotificationSettingsEndpoint]
+    public Task<IActionResult> SaveReminder(string id, NotificationSettingsRequest request, CancellationToken ct)
+    {
+        return RunAsync(async owner => Ok(await habits.SaveReminderAsync(owner, ParseId(id), request, ct)), ct);
+    }
+
     [HttpPut("{id}/completions/{date}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public Task<IActionResult> Complete(string id, string date, CancellationToken ct) =>
@@ -83,30 +97,9 @@ public sealed class HabitsController(HabitService habits) : ControllerBase
 
     private async Task<IActionResult> RunAsync(Func<User, Task<IActionResult>> action, CancellationToken ct)
     {
-        try
-        {
-            var owner = await habits.GetOwnerAsync(User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, ct);
-            return await action(owner);
-        }
-        catch (HabitApiException error)
-        {
-            if (error.Status == StatusCodes.Status401Unauthorized)
-                Response.Headers.WWWAuthenticate = "Bearer";
-
-            return new ObjectResult(ToProblem(error))
-            {
-                StatusCode = error.Status,
-                ContentTypes = { "application/problem+json" }
-            };
-        }
+        var owner = await habits.GetOwnerAsync(User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, ct);
+        return await action(owner);
     }
-
-    internal static ProblemDetails ToProblem(HabitApiException error) => new()
-    {
-        Status = error.Status,
-        Title = error.Message,
-        Extensions = { ["code"] = error.Code }
-    };
 
     private string? PreserveEmptyQuery(string key, string? value) =>
         value ?? (Request.Query.ContainsKey(key) ? "" : null);
