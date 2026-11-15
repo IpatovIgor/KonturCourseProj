@@ -1,6 +1,7 @@
 using System.Globalization;
 using BackEnd.Data;
 using BackEnd.Models;
+using HabitTracker.Contracts;
 using MongoDB.Bson;
 
 namespace BackEnd.Services;
@@ -66,17 +67,41 @@ public sealed class HabitService(IHabitRepository repository, IUserRepository us
             var today = LocalDate(owner, now);
             var todayText = Format(today);
 
+            var current = ScheduleOn(habit, todayText);
+            var future = habit.ScheduleVersions.Find(version => Compare(version.EffectiveFrom, todayText) > 0);
+            var next = current.DaysOfWeek.SequenceEqual(fields.Days)
+                ? null : new HabitSchedule(Format(today.AddDays(1)), fields.Days);
+            if (habit.Name == fields.Name && habit.Description == fields.Description && SameSchedule(future, next))
+                return ToResponse(habit, todayText);
+
             habit.Name = fields.Name;
             habit.Description = fields.Description;
             habit.UpdatedAt = ToStoredTimestamp(now);
-            var current = ScheduleOn(habit, todayText);
             habit.ScheduleVersions.RemoveAll(version => Compare(version.EffectiveFrom, todayText) > 0);
-            if (!current.DaysOfWeek.SequenceEqual(fields.Days))
-                habit.ScheduleVersions.Add(new(Format(today.AddDays(1)), fields.Days));
+            if (next is not null)
+                habit.ScheduleVersions.Add(next);
 
             if (await repository.TrySaveAsync(habit, ct))
                 return ToResponse(habit, todayText);
         }
+    }
+
+    private static bool SameSchedule(HabitSchedule? current, HabitSchedule? next) =>
+        current is null ? next is null
+            : next is not null && current.EffectiveFrom == next.EffectiveFrom && current.DaysOfWeek.SequenceEqual(next.DaysOfWeek);
+
+    public async Task<NotificationSettings> GetReminderAsync(User owner, ObjectId id, CancellationToken ct)
+    {
+        var habit = await GetOwnedHabitAsync(owner, id, ct);
+        return new(habit.ReminderEnabled, habit.ReminderLocalTime);
+    }
+
+    public async Task<NotificationSettings> SaveReminderAsync(User owner, ObjectId id,
+        NotificationSettingsRequest request, CancellationToken ct)
+    {
+        var habit = await repository.SaveReminderAsync(OwnerId(owner), id, request.Validate(), ct)
+            ?? throw HabitApiException.NotFound();
+        return new(habit.ReminderEnabled, habit.ReminderLocalTime);
     }
 
     public async Task ArchiveAsync(User owner, ObjectId id, CancellationToken ct)
@@ -244,7 +269,7 @@ public sealed class HabitService(IHabitRepository repository, IUserRepository us
         return (first, last);
     }
 
-    private static bool IsScheduled(Habit habit, DateOnly date, string text) =>
+    internal static bool IsScheduled(Habit habit, DateOnly date, string text) =>
         Compare(text, habit.StartDate) >= 0 && ScheduleOn(habit, text).DaysOfWeek.Contains(((int)date.DayOfWeek + 6) % 7 + 1);
 
     private static HabitSchedule ScheduleOn(Habit habit, string date) =>
@@ -264,9 +289,9 @@ public sealed class HabitService(IHabitRepository repository, IUserRepository us
         DateTimeOffset.FromUnixTimeMilliseconds(now.ToUnixTimeMilliseconds()).UtcDateTime;
 
     private static DateOnly LocalDate(User user, DateTimeOffset now) =>
-        DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(user.TimeZoneId)).DateTime);
+        NotificationCalendar.LocalDate(now, user.TimeZoneId);
 
-    private static DateOnly ParseDate(string value) =>
+    internal static DateOnly ParseDate(string value) =>
         DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
             ? date
             : throw HabitApiException.Validation("Дата должна быть в формате YYYY-MM-DD");

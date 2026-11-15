@@ -1,0 +1,5 @@
+<Project>
+    <PropertyGroup>
+        <MassTransitVersion>8.5.12</MassTransitVersion>
+    </PropertyGroup>
+</Project>

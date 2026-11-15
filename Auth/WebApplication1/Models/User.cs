@@ -24,6 +24,13 @@ public class User
     [BsonElement("lastLoginAt")]
     public DateTime? LastLoginAt { get; set; }
 
+    [BsonElement("summaryEnabled")]
+    public bool SummaryEnabled { get; set; }
+    [BsonElement("summaryLocalTime")]
+    public string SummaryLocalTime { get; set; } = "21:00";
+    [BsonElement("summaryRevision")]
+    public long SummaryRevision { get; set; }
+
     public const string DefaultTimeZoneId = "Asia/Yekaterinburg";
 
     [BsonElement("timeZoneId")]

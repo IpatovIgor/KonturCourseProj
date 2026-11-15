@@ -1,6 +1,8 @@
 using BackEnd.Controllers;
 using BackEnd.Data;
 using BackEnd.Services;
+using HabitTracker.Messaging;
+using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,6 +21,7 @@ var builder = WebApplication.CreateBuilder(args);
 // 1. Подключаем настройки из appsettings.json
 builder.Services.Configure<MongoDbSettings>(
     builder.Configuration.GetSection("MongoDbSettings"));
+builder.Services.AddOptions<NotificationFeatures>().BindConfiguration("Features");
 
 builder.Services.AddOptions<JwtSettings>()
     .Bind(builder.Configuration.GetSection("JwtSettings"))
@@ -38,6 +41,24 @@ builder.Services.AddSingleton<IUserRepository>(services => services.GetRequiredS
 builder.Services.AddSingleton<HabitRepository>();
 builder.Services.AddSingleton<IHabitRepository>(services => services.GetRequiredService<HabitRepository>());
 builder.Services.AddHostedService<MongoIndexInitializer>();
+builder.Services.AddSingleton<MongoOutbox>();
+builder.Services.AddSingleton<RequestEventContext>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<WorkerScheduleRepository>();
+builder.Services.AddScoped<WorkerSchedules>();
+builder.Services.AddScoped<WorkerKeyFilter>();
+
+var rabbit = builder.Configuration.GetSection("RabbitMq").Get<RabbitMqSettings>();
+if (rabbit is not null && !string.IsNullOrWhiteSpace(rabbit.Host))
+{
+    builder.Services.AddMassTransit(registration =>
+        registration.UsingRabbitMq((_, bus) => rabbit.Configure(bus)));
+    builder.Services.Configure<MassTransitHostOptions>(options => options.WaitUntilStarted = false);
+    builder.Services.AddHostedService<OutboxPublisher>();
+}
+
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<HabitService>();
 builder.Services.AddScoped<AuthService>();
@@ -49,7 +70,7 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
     options.InvalidModelStateResponseFactory = context =>
     {
         var response = original(context);
-        if (IsHabitsAction(context.HttpContext) &&
+        if (UsesJwtSubject(context.HttpContext) &&
             response is ObjectResult { Value: ValidationProblemDetails problem })
         {
             problem.Extensions["code"] = "validation_error";
@@ -57,6 +78,12 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
         return response;
     };
 });
+builder.Services.AddOptions<MvcOptions>()
+    .Configure<IOptions<NotificationFeatures>>((mvc, features) =>
+    {
+        if (!features.Value.NotificationsEnabled)
+            mvc.Conventions.Add(new HideNotificationSettings());
+    });
 builder.Services.AddAuthorization();
 
 builder.Services.AddCors(options =>
@@ -78,20 +105,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         {
             OnTokenValidated = context =>
             {
-                if (IsHabitsAction(context.HttpContext) &&
+                if (UsesJwtSubject(context.HttpContext) &&
                     !ObjectId.TryParse(context.Principal?.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, out _))
                     context.Fail("Invalid JWT subject.");
                 return Task.CompletedTask;
             },
             OnChallenge = async context =>
             {
-                if (!IsHabitsAction(context.HttpContext))
+                if (!UsesJwtSubject(context.HttpContext))
                     return;
 
                 context.HandleResponse();
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers.WWWAuthenticate = "Bearer";
-                await context.Response.WriteAsJsonAsync(HabitsController.ToProblem(HabitApiException.Unauthenticated()),
+                await context.Response.WriteAsJsonAsync(ApiExceptionHandler.ToProblem(HabitApiException.Unauthenticated()),
                     options: null, contentType: "application/problem+json",
                     cancellationToken: context.HttpContext.RequestAborted);
             }
@@ -148,6 +175,7 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+app.UseExceptionHandler();
 app.UseHttpsRedirection();
 
 app.UseCors("AllowReactApp");
@@ -162,15 +190,18 @@ app.MapControllers();
 // 9. Запускаем приложение
 app.Run();
 
-static bool IsHabitsAction(HttpContext context) =>
-    context.GetEndpoint()?.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType()
-    == typeof(HabitsController);
+static bool UsesJwtSubject(HttpContext context)
+{
+    var controller = context.GetEndpoint()?.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType();
+    return controller == typeof(HabitsController) || controller == typeof(ProfileController);
+}
 
 internal sealed class BearerOperationFilter : IOperationFilter
 {
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
-        if (context.MethodInfo.DeclaringType != typeof(HabitsController))
+        if (context.MethodInfo.DeclaringType != typeof(HabitsController)
+            && context.MethodInfo.DeclaringType != typeof(ProfileController))
             return;
 
         operation.Security.Add(new OpenApiSecurityRequirement

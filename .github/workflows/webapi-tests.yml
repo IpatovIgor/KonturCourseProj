@@ -1,0 +1,42 @@
+name: WebAPI tests
+
+on:
+  pull_request:
+    paths:
+      - 'Auth/**'
+      - 'deploy/rabbitmq/**'
+      - 'compose.webapi-tests.yaml'
+      - '.github/workflows/webapi-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  webapi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KONTUR_TEST_MONGO_URI: 'mongodb://127.0.0.1:27142/?directConnection=true&replicaSet=rs0'
+      KONTUR_TEST_RABBIT_URI: 'rabbitmq://127.0.0.1:5673'
+      KONTUR_TEST_RABBIT_MANAGEMENT_URI: 'http://127.0.0.1:15673'
+      KONTUR_TEST_RABBIT_USER: webapi-test
+      KONTUR_TEST_RABBIT_PASSWORD: webapi-test-only
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+      - name: Start MongoDB and RabbitMQ
+        run: docker compose -f compose.webapi-tests.yaml up -d --wait --wait-timeout 240
+      - name: Run WebAPI tests
+        run: dotnet test WebApplication1.sln -c Release
+        working-directory: Auth
+      - name: Show dependency logs on failure
+        if: failure()
+        run: docker compose -f compose.webapi-tests.yaml logs --tail 100
+      - name: Remove test services
+        if: always()
+        run: docker compose -f compose.webapi-tests.yaml down -v
