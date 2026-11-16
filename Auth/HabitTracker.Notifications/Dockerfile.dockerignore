@@ -1,0 +1,12 @@
+**
+!Auth/
+!Auth/Directory.Build.props
+!Auth/global.json
+!Auth/HabitTracker.Contracts/
+!Auth/HabitTracker.Contracts/**
+!Auth/HabitTracker.Messaging/
+!Auth/HabitTracker.Messaging/**
+!Auth/HabitTracker.Notifications/
+!Auth/HabitTracker.Notifications/**
+**/bin
+**/obj

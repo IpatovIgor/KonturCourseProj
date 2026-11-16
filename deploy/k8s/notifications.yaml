@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  namespace: habit-tracker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: notifications
+  template:
+    metadata:
+      labels:
+        app: notifications
+    spec:
+      containers:
+        - name: notifications
+          image: habit-tracker-notifications:local
+          ports:
+            - name: http
+              containerPort: 80
+          envFrom:
+            - secretRef:
+                name: notifications
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1654
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  namespace: habit-tracker
+spec:
+  selector:
+    app: notifications
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

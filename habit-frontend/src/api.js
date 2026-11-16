@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { createNotificationsApi } from './notifications/api.js'
 
 const config = {
   baseURL: (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, ''),
@@ -31,6 +32,7 @@ export function createHabitsApi(token, onUnauthorized) {
   const habit = (id) => '/habits/' + encodeURIComponent(id)
 
   return {
+    notifications: createNotificationsApi(http),
     today: (signal) => data(http.get('/habits/today', { signal })),
     list: (status, page, signal) => data(http.get('/habits', { params: { status, page, pageSize: 20 }, signal })),
     get: (id, signal) => data(http.get(habit(id), { signal })),

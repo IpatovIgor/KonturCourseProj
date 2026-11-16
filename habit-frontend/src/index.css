@@ -122,3 +122,10 @@ form > .error + .actions { margin-top: .75rem; }
   .range-fields { grid-template-columns: 1fr; }
   .habit-row { align-items: flex-start; flex-direction: column; }
 }
+
+.notifications { display: grid; gap: .65rem; margin-bottom: 1rem; }
+.notification-panel > summary { cursor: pointer; font-weight: 650; }
+.notification-panel > summary > span { margin-left: .45rem; font-size: .86rem; font-weight: 400; }
+.notification-unread { font-weight: 650; }
+.form-stack .notification-checkbox { display: flex; align-items: center; gap: .6rem; }
+.notification-checkbox input { flex-shrink: 0; }

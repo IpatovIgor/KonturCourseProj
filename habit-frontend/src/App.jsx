@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createHabitsApi, errorMessage, isValidToken, login, register } from './api.js'
 import HabitTracker from './HabitTracker.jsx'
+import useNotifications from './notifications/useNotifications.js'
 
 function AuthScreen({ onLogin, sessionNotice }) {
   const [registering, setRegistering] = useState(false)
@@ -83,12 +84,14 @@ export default function App() {
     else localStorage.removeItem('token')
   }, [session])
 
-  const api = useMemo(() => session && createHabitsApi(session.token, () => {
+  const onUnauthorized = useCallback(() => {
     setAuth((current) => current.session === session
       ? { session: null, notice: 'Сессия завершилась. Войдите снова.' }
       : current)
-  }), [session])
+  }, [session])
+  const api = useMemo(() => session && createHabitsApi(session.token, onUnauthorized), [session, onUnauthorized])
+  const notifications = useNotifications(api?.notifications, session?.token, onUnauthorized)
 
   if (!session) return <AuthScreen onLogin={(token) => setAuth({ session: { token }, notice: '' })} sessionNotice={notice} />
-  return <HabitTracker api={api} onLogout={() => setAuth({ session: null, notice: '' })} />
+  return <HabitTracker key={session.token} api={api} notifications={notifications} onLogout={() => setAuth({ session: null, notice: '' })} />
 }

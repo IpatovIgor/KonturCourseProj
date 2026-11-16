@@ -3,6 +3,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.jsx'
 
+vi.mock('./notifications/connection.js', async (load) => ({
+  ...await load(),
+  openNotificationsConnection: () => ({
+    start: async () => {}, stop: async () => {}, on: () => {}, off: () => {},
+    onreconnected: () => {}, onclose: () => {},
+  }),
+}))
+
 const transport = vi.hoisted(() => vi.fn())
 vi.mock('axios', async (load) => {
   const { default: axios } = await load()
@@ -34,6 +42,10 @@ function mockApi(overrides = {}) {
   const handlers = {
     'POST /api/auth/register': () => reply({ message: 'Пользователь успешно зарегистрирован' }, 201),
     'POST /api/auth/login': () => reply({ token: 'test-token', email: 'reader@example.test' }),
+    'GET /api/notifications': () => reply({ items: [], unreadCount: 0, nextCursor: null }),
+    'GET /api/profile/summary-settings': () => reply({ enabled: false, localTime: '21:00' }),
+    'GET /api/habits/abc/reminder': () => reply({ enabled: false, localTime: '20:00' }),
+    'GET /api/habits/old/reminder': () => reply({ enabled: false, localTime: '20:00' }),
     'GET /api/habits/today': () => reply({ ...today, items: [{ ...habit, completed }] }),
     'GET /api/habits': ({ params }) => reply({ items: params.status === 'archived' ? [archived] : [habit], totalCount: 1, page: params.page, pageSize: 20 }),
     'POST /api/habits': () => reply(habit, 201),

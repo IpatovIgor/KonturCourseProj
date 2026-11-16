@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'Auth/**'
+      - 'habit-frontend/**'
       - 'deploy/rabbitmq/**'
       - 'compose.webapi-tests.yaml'
       - '.github/workflows/webapi-tests.yml'
@@ -32,8 +33,23 @@ jobs:
       - name: Start MongoDB and RabbitMQ
         run: docker compose -f compose.webapi-tests.yaml up -d --wait --wait-timeout 240
       - name: Run WebAPI tests
-        run: dotnet test WebApplication1.sln -c Release
+        run: dotnet test BackEnd.Tests -c Release
         working-directory: Auth
+      - name: Run Notifications tests
+        run: dotnet test HabitTracker.Notifications.Tests -c Release
+        working-directory: Auth
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: habit-frontend/package-lock.json
+      - name: Check React client
+        working-directory: habit-frontend
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm run build
       - name: Show dependency logs on failure
         if: failure()
         run: docker compose -f compose.webapi-tests.yaml logs --tail 100
