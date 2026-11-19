@@ -12,6 +12,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HabitTracker.Notifications"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HabitTracker.Notifications.Tests", "HabitTracker.Notifications.Tests\HabitTracker.Notifications.Tests.csproj", "{C71656E6-0CC2-43EE-8104-BB610D940EA9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HabitTracker.Worker", "HabitTracker.Worker\HabitTracker.Worker.csproj", "{1C52874D-4A47-4354-BEE3-C88211D2E37F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HabitTracker.Worker.Tests", "HabitTracker.Worker.Tests\HabitTracker.Worker.Tests.csproj", "{2F80B3D5-9861-464A-A663-910AD243A5F8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -42,5 +46,13 @@ Global
 		{C71656E6-0CC2-43EE-8104-BB610D940EA9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C71656E6-0CC2-43EE-8104-BB610D940EA9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C71656E6-0CC2-43EE-8104-BB610D940EA9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1C52874D-4A47-4354-BEE3-C88211D2E37F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1C52874D-4A47-4354-BEE3-C88211D2E37F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1C52874D-4A47-4354-BEE3-C88211D2E37F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1C52874D-4A47-4354-BEE3-C88211D2E37F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F80B3D5-9861-464A-A663-910AD243A5F8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F80B3D5-9861-464A-A663-910AD243A5F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F80B3D5-9861-464A-A663-910AD243A5F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F80B3D5-9861-464A-A663-910AD243A5F8}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
