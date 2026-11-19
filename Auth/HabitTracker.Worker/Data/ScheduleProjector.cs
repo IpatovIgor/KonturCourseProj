@@ -70,6 +70,7 @@ public sealed class ScheduleProjector(ScheduleCalculator calculator)
     private static bool SameCalendar(HabitSchedule a, HabitSchedule b) =>
         a.Status == b.Status && a.StartDate == b.StartDate && a.TimeZoneId == b.TimeZoneId &&
         a.ReminderEnabled == b.ReminderEnabled && a.ReminderLocalTime == b.ReminderLocalTime &&
+        a.ReminderFirstEligibleDate == b.ReminderFirstEligibleDate &&
         a.ScheduleVersions.Count == b.ScheduleVersions.Count &&
         a.ScheduleVersions.Zip(b.ScheduleVersions).All(pair =>
             pair.First.EffectiveFrom == pair.Second.EffectiveFrom &&
@@ -88,6 +89,7 @@ public sealed class ScheduleProjector(ScheduleCalculator calculator)
         TimeZoneId = s.TimeZoneId,
         ReminderEnabled = s.ReminderEnabled,
         ReminderLocalTime = s.ReminderLocalTime,
+        ReminderFirstEligibleDate = s.ReminderFirstEligibleDate,
         LastEventId = eventId,
         LastCorrelationId = correlationId,
         LastTraceParent = traceParent, LastTraceState = traceState
@@ -97,7 +99,8 @@ public sealed class ScheduleProjector(ScheduleCalculator calculator)
     {
         Id = h.Id, UserId = h.UserId, Revision = h.Revision, Status = h.Status, StartDate = h.StartDate,
         ScheduleVersions = h.ScheduleVersions, TimeZoneId = h.TimeZoneId, ReminderEnabled = h.ReminderEnabled,
-        ReminderLocalTime = h.ReminderLocalTime, NextDueAtUtc = dueAtUtc, NextLocalDate = localDate,
+        ReminderLocalTime = h.ReminderLocalTime, ReminderFirstEligibleDate = h.ReminderFirstEligibleDate,
+        NextDueAtUtc = dueAtUtc, NextLocalDate = localDate,
         LastEventId = h.LastEventId, LastCorrelationId = h.LastCorrelationId, LastTraceParent = h.LastTraceParent, LastTraceState = h.LastTraceState
     };
 

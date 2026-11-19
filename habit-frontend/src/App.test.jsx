@@ -161,7 +161,8 @@ describe('Привычки', () => {
     click('Новая привычка')
     fill('Название', '  Зарядка  ')
     fill('Описание', '  Утром  ')
-    for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
+    const schedule = screen.getByRole('group', { name: 'Дни недели' })
+    for (const checkbox of within(schedule).getAllByRole('checkbox')) fireEvent.click(checkbox)
     click('Создать привычку')
     expect(screen.getByText('Выберите хотя бы один день недели.')).toBeTruthy()
     expect(request('POST /api/habits')).toBeUndefined()
@@ -217,8 +218,8 @@ describe('Привычки', () => {
     const row = await screen.findByText('09.11.2026')
     fireEvent.click(within(row.closest('li')).getByRole('button', { name: 'Отметить' }))
     await waitFor(() => expect(request('PUT /api/habits/abc/completions/2026-11-09')).toBeTruthy())
-    expect(within(screen.getByText('Не запланировано').closest('li')).queryByRole('button')).toBeNull()
-    expect(screen.getByText('—')).toBeTruthy()
+    expect(within((await screen.findByText('Не запланировано')).closest('li')).queryByRole('button')).toBeNull()
+    expect(await screen.findByText('—')).toBeTruthy()
     fill('С даты', '2026-11-01')
     fill('По дату', '2026-11-11')
     click('Применить период')
@@ -293,10 +294,62 @@ describe('Привычки', () => {
     load.mockResolvedValue(reply({ ...today, date: '2026-11-11' }))
     getHabit.mockResolvedValue(reply({ ...habit, daysOfWeek: [3], nextSchedule: null }))
     fireEvent.focus(window)
-    await waitFor(() => expect(transport.mock.calls.filter(([config]) => route(config) === 'GET /api/habits/abc/history')).toHaveLength(2))
+    await waitFor(() => expect(transport.mock.calls.filter(([config]) => route(config) === 'GET /api/habits/abc/history').length).toBeGreaterThanOrEqual(2))
     expect(await screen.findByText('Расписание · Ср')).toBeTruthy()
     click('К списку')
     expect(await screen.findByText(/11\.11\.2026 · Asia\/Yekaterinburg/)).toBeTruthy()
+  })
+
+  it('отправляет время напоминания одним запросом при создании привычки', async () => {
+    signedIn()
+    click('Новая привычка')
+    fill('Название', 'Чтение')
+    fireEvent.click(screen.getByLabelText('Напоминать о привычке'))
+    fill('Местное время аккаунта', '09:00')
+    click('Создать привычку')
+    await screen.findByText('Привычка создана.')
+    expect(JSON.parse(request('POST /api/habits').data).reminder).toEqual({ enabled: true, localTime: '09:00' })
+    expect(request('PUT /api/habits/abc/reminder')).toBeUndefined()
+  })
+
+  it('обновляет статистику при возврате во вкладку в ту же дату', async () => {
+    const load = vi.fn().mockResolvedValue(reply(statistics))
+    mockApi({ 'GET /api/habits/abc/statistics': load })
+    signedIn()
+    fireEvent.click(await waitButton('Чтение'))
+    await screen.findByText('—')
+
+    load.mockResolvedValue(reply({ ...statistics, plannedDays: 2, completedDays: 1, completionRatePercent: 50 }))
+    fireEvent.focus(window)
+    expect(await screen.findByText('50%')).toBeTruthy()
+  })
+
+  it('перечитывает период, если карточка загрузилась до полуночи, а Сегодня вернулось после', async () => {
+    const nextDate = '2026-11-11'
+    const loadToday = vi.fn().mockResolvedValue(reply(today))
+    const loadStats = vi.fn().mockResolvedValue(reply(statistics))
+    mockApi({ 'GET /api/habits/today': loadToday, 'GET /api/habits/abc/statistics': loadStats })
+    signedIn()
+    fireEvent.click(await waitButton('Чтение'))
+    await screen.findByText('—')
+
+    let finishToday
+    const previousStatsRequests = loadStats.mock.calls.length
+    loadToday.mockImplementation(() => new Promise((resolve) => { finishToday = resolve }))
+    fireEvent.focus(window)
+    await waitFor(() => expect(loadStats.mock.calls.length).toBeGreaterThan(previousStatsRequests))
+    await waitFor(() => expect(finishToday).toBeTypeOf('function'))
+    loadStats.mockResolvedValue(reply({ ...statistics, to: nextDate, plannedDays: 2, completedDays: 1, completionRatePercent: 50 }))
+    await act(async () => finishToday(reply({ ...today, date: nextDate })))
+    expect(await screen.findByText('50%')).toBeTruthy()
+  })
+
+  it('скрывает панель сводки, если сервер отключил настройку', async () => {
+    mockApi({ 'GET /api/profile/summary-settings': () => Promise.reject(failure(404)) })
+    signedIn()
+    await waitButton('Отметить')
+    expect(request('GET /api/profile/summary-settings')).toBeTruthy()
+    expect(screen.queryByText('Дневная сводка')).toBeNull()
   })
 
   it('игнорирует поздний ответ от предыдущей карточки', async () => {

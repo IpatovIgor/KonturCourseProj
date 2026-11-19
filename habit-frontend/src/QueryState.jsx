@@ -1,6 +1,6 @@
 import { errorMessage } from './api.js'
 
-export default function QueryState({ query }) {
+export default function QueryState({ query, showRefresh = false }) {
   if (query.error) {
     return (
       <div className="feedback">
@@ -9,6 +9,6 @@ export default function QueryState({ query }) {
       </div>
     )
   }
-  if (query.loading && !query.data) return <p className="muted" role="status">Загрузка…</p>
+  if (query.loading && (!query.data || showRefresh)) return <p className="muted" role="status">Загрузка…</p>
   return null
 }

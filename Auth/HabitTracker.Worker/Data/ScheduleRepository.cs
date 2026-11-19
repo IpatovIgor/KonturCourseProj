@@ -8,16 +8,28 @@ public sealed class ScheduleRepository(IMongoDatabase database)
     private readonly IMongoCollection<HabitSchedule> _habits = database.GetCollection<HabitSchedule>("habitSchedules");
     private readonly IMongoCollection<SummarySchedule> _summaries = database.GetCollection<SummarySchedule>("summarySchedules");
 
-    public async Task<IReadOnlyList<HabitSchedule>> FindDueHabitsAsync(DateTime now, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<HabitSchedule>> FindDueHabitsAsync(DateTime now, int limit, CancellationToken ct,
+        HabitSchedule? after = null)
     {
-        var filter = Builders<HabitSchedule>.Filter.And(
-            Builders<HabitSchedule>.Filter.Ne(x => x.NextDueAtUtc, null),
-            Builders<HabitSchedule>.Filter.Lte(x => x.NextDueAtUtc, now));
+        var filter = DueHabits(now);
+        if (after is not null)
+        {
+            var fields = Builders<HabitSchedule>.Filter;
+            filter &= fields.Gt(x => x.NextDueAtUtc, after.NextDueAtUtc) |
+                (fields.Eq(x => x.NextDueAtUtc, after.NextDueAtUtc) & fields.Gt(x => x.Id, after.Id));
+        }
         return await _habits.Find(filter)
             .SortBy(x => x.NextDueAtUtc).ThenBy(x => x.Id)
             .Limit(limit)
             .ToListAsync(ct);
     }
+
+    public Task<HabitSchedule?> FindDueHabitAsync(string id, DateTime now, CancellationToken ct) =>
+        _habits.Find(DueHabits(now) & Builders<HabitSchedule>.Filter.Eq(x => x.Id, id)).FirstOrDefaultAsync(ct)!;
+
+    private static FilterDefinition<HabitSchedule> DueHabits(DateTime now) =>
+        Builders<HabitSchedule>.Filter.Ne(x => x.NextDueAtUtc, null) &
+        Builders<HabitSchedule>.Filter.Lte(x => x.NextDueAtUtc, now);
 
     public async Task<IReadOnlyList<SummarySchedule>> FindDueSummariesAsync(DateTime now, int limit, CancellationToken ct)
     {

@@ -103,13 +103,18 @@ public sealed class HabitRepository(IMongoDatabase database, IOptions<MongoDbSet
             if (habit.ReminderEnabled == settings.Enabled && habit.ReminderLocalTime == settings.LocalTime)
                 return habit;
 
+            var user = await _users.Find(session, item => item.Id == owner.ToString()).FirstOrDefaultAsync(token);
+            var zone = user?.TimeZoneId ?? User.DefaultTimeZoneId;
+            var now = clock.GetUtcNow();
             var update = Builders<Habit>.Update.Set(item => item.ReminderEnabled, settings.Enabled)
                 .Set(item => item.ReminderLocalTime, settings.LocalTime)
-                .Set(item => item.UpdatedAt, clock.GetUtcNow().UtcDateTime)
+                .Set(item => item.ReminderFirstEligibleDate, settings.FirstEligibleDate(now, zone))
+                .Set(item => item.UpdatedAt, now.UtcDateTime)
                 .Inc(item => item.Revision, 1);
             var saved = await _habits.FindOneAndUpdateAsync(session, filter, update,
                 new FindOneAndUpdateOptions<Habit> { ReturnDocument = ReturnDocument.After }, token);
-            await AddEventAsync(session, saved, "reminderChanged", context, token);
+            if (features.Value.NotificationsEnabled)
+                await AddEventAsync(session, saved, zone, "reminderChanged", context, token);
             return saved;
         }, ct);
     }

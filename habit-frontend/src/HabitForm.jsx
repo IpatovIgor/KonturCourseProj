@@ -5,6 +5,8 @@ export default function HabitForm({ habit, pending, onSave, onCancel }) {
   const [name, setName] = useState(habit?.name ?? '')
   const [description, setDescription] = useState(habit?.description ?? '')
   const [daysOfWeek, setDaysOfWeek] = useState(habit?.nextSchedule?.daysOfWeek ?? habit?.daysOfWeek ?? [1, 2, 3, 4, 5, 6, 7])
+  const [reminderEnabled, setReminderEnabled] = useState(false)
+  const [reminderTime, setReminderTime] = useState('20:00')
   const [error, setError] = useState('')
 
   function toggleDay(day) {
@@ -29,7 +31,9 @@ export default function HabitForm({ habit, pending, onSave, onCancel }) {
       return
     }
     setError('')
-    onSave({ name: title, description: note || null, daysOfWeek: [...daysOfWeek].sort((a, b) => a - b) })
+    const fields = { name: title, description: note || null, daysOfWeek: [...daysOfWeek].sort((a, b) => a - b) }
+    if (!habit && reminderEnabled) fields.reminder = { enabled: true, localTime: reminderTime }
+    onSave(fields)
   }
 
   return (
@@ -45,6 +49,18 @@ export default function HabitForm({ habit, pending, onSave, onCancel }) {
             <label key={label}><input type="checkbox" checked={daysOfWeek.includes(index + 1)} onChange={() => toggleDay(index + 1)} />{label}</label>
           ))}
         </fieldset>
+        {!habit && (
+          <fieldset disabled={pending}>
+            <legend>Напоминание</legend>
+            <label className="notification-checkbox">
+              <input type="checkbox" checked={reminderEnabled} onChange={(event) => setReminderEnabled(event.target.checked)} />
+              Напоминать о привычке
+            </label>
+            {reminderEnabled && (
+              <label>Местное время аккаунта<input required type="time" value={reminderTime} onChange={(event) => setReminderTime(event.target.value)} /></label>
+            )}
+          </fieldset>
+        )}
         {habit && <p className="muted">Изменение дней вступит в силу со следующего дня.</p>}
         <div className="actions">
           <button className="primary" disabled={pending}>{habit ? 'Сохранить' : 'Создать привычку'}</button>

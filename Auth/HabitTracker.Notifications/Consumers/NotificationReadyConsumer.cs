@@ -8,12 +8,16 @@ using MongoDB.Bson;
 
 namespace HabitTracker.Notifications.Consumers;
 
-public sealed class NotificationReadyConsumer(NotificationRepository repository, INotificationDelivery delivery)
+public sealed class NotificationReadyConsumer(NotificationRepository repository, INotificationDelivery delivery,
+    IConfiguration configuration)
     : IConsumer<NotificationReadyV1>
 {
     public async Task Consume(ConsumeContext<NotificationReadyV1> context)
     {
         var notification = Validate(context.Message);
+        if (notification.Kind == "dailySummary" && !configuration.GetValue("Features:DailySummaryEnabled", true))
+            return;
+
         var saved = await repository.StoreAsync(notification, context.CancellationToken);
         try
         {

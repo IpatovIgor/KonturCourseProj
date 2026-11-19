@@ -3,7 +3,10 @@ using System.Text.Json.Serialization;
 namespace BackEnd.Models;
 
 public sealed record HabitRequest(string? Name, string? Description,
-    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int[]? DaysOfWeek);
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int[]? DaysOfWeek)
+{
+    public NotificationSettingsRequest? Reminder { get; init; }
+}
 
 public record HabitResponse(
     string Id, string Name, string? Description, int[] DaysOfWeek,

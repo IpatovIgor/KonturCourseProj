@@ -1,0 +1,12 @@
+**
+!global.json
+!Directory.Build.props
+!HabitTracker.Contracts/
+!HabitTracker.Contracts/**
+!HabitTracker.Messaging/
+!HabitTracker.Messaging/**
+!WebApplication1/
+!WebApplication1/**
+**/bin/
+**/obj/
+**/.env*

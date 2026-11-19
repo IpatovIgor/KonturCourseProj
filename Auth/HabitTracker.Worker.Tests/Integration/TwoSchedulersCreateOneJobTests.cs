@@ -71,9 +71,10 @@ public sealed class TwoSchedulersCreateOneJobTests(WorkerInfrastructureFixture f
         Assert.Equal("2026-11-19", job.LocalDate);
         Assert.Equal(1, job.ScheduleRevision);
         Assert.Equal(correlation, job.LastCorrelationId);
-        await jobs.UpdateOneAsync(x => x.Id == job.Id, Builders<Job>.Update.Set(x => x.Status, JobStatus.Skipped));
+        await jobs.UpdateOneAsync(x => x.Id == job.Id, Builders<Job>.Update.Set(x => x.Status, JobStatus.Skipped)
+            .Set(x => x.LastErrorCode, "ineligible"));
 
-        // Simulate a newer projection of the same day after the user changes the schedule.
+        // Tomorrow's changed weekdays produce a new revision but do not change today's deadline.
         await habits.UpdateOneAsync(x => x.Id == habit.Id,
             Builders<HabitSchedule>.Update.Set(x => x.NextDueAtUtc, job.DueAtUtc)
                 .Set(x => x.NextLocalDate, job.LocalDate).Inc(x => x.Revision, 1));
@@ -81,6 +82,39 @@ public sealed class TwoSchedulersCreateOneJobTests(WorkerInfrastructureFixture f
         var sameJob = await jobs.Find(FilterDefinition<Job>.Empty).SingleAsync();
         Assert.Equal(job.Id, sameJob.Id);
         Assert.Equal(JobStatus.Skipped, sameJob.Status);
+
+        var movedDue = job.DueAtUtc.AddMinutes(15);
+        // A retry delay is later than the newly selected time, but the original slot was earlier.
+        await jobs.UpdateOneAsync(x => x.Id == job.Id, Builders<Job>.Update.Set(x => x.DueAtUtc, movedDue.AddMinutes(5)));
+        await habits.UpdateOneAsync(x => x.Id == habit.Id,
+            Builders<HabitSchedule>.Update.Set(x => x.NextDueAtUtc, movedDue)
+                .Set(x => x.NextLocalDate, job.LocalDate).Inc(x => x.Revision, 1));
+        await a.TickAsync(default);
+        var rescheduled = await jobs.Find(FilterDefinition<Job>.Empty).SingleAsync();
+        Assert.Equal(job.Id, rescheduled.Id);
+        Assert.Equal(JobStatus.Pending, rescheduled.Status);
+        Assert.Equal(3, rescheduled.ScheduleRevision);
+        Assert.Equal(movedDue, rescheduled.DueAtUtc);
+
+        await jobs.UpdateOneAsync(x => x.Id == job.Id, Builders<Job>.Update.Set(x => x.Status, JobStatus.Running));
+        var newerDue = movedDue.AddMinutes(15);
+        await habits.UpdateOneAsync(x => x.Id == habit.Id,
+            Builders<HabitSchedule>.Update.Set(x => x.NextDueAtUtc, newerDue)
+                .Set(x => x.NextLocalDate, job.LocalDate).Inc(x => x.Revision, 1));
+        await habits.InsertOneAsync(new HabitSchedule
+        {
+            Id = "h2", UserId = "u1", Revision = 1, Status = "active", StartDate = habit.StartDate,
+            ScheduleVersions = habit.ScheduleVersions, TimeZoneId = "UTC", ReminderEnabled = true,
+            ReminderLocalTime = "20:30", NextDueAtUtc = newerDue, NextLocalDate = job.LocalDate
+        });
+        options.Value.BatchSize = 1;
+        await a.TickAsync(default);
+        Assert.Equal(job.LocalDate, (await habits.Find(x => x.Id == habit.Id).SingleAsync()).NextLocalDate);
+        Assert.True(await jobs.Find(x => x.HabitKey == "h2" && x.LocalDate == job.LocalDate).AnyAsync());
+        await jobs.UpdateOneAsync(x => x.Id == job.Id, Builders<Job>.Update.Set(x => x.Status, JobStatus.Skipped)
+            .Set(x => x.LastErrorCode, "ineligible"));
+        await a.TickAsync(default);
+        Assert.Equal(JobStatus.Pending, (await jobs.Find(x => x.Id == job.Id).SingleAsync()).Status);
 
         var stored = await habits.Find(x => x.Id == "h1").FirstAsync();
         Assert.Equal("2026-11-20", stored.NextLocalDate);

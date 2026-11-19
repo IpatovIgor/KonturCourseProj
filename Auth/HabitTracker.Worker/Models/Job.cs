@@ -42,6 +42,9 @@ public sealed class Job
     [BsonElement("dueAtUtc")]
     public DateTime DueAtUtc { get; init; }
 
+    [BsonElement("scheduledDueAtUtc"), BsonIgnoreIfNull]
+    public DateTime? ScheduledDueAtUtc { get; init; }
+
     [BsonElement("timeZoneId")]
     public required string TimeZoneId { get; init; }
 

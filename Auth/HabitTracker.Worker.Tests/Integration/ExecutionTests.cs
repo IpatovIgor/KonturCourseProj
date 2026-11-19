@@ -21,6 +21,21 @@ public sealed class ExecutionTests(WorkerInfrastructureFixture fixture)
 {
     private static readonly DateTimeOffset Evening = new(2026, 11, 19, 20, 0, 0, TimeSpan.Zero);
 
+    [Fact]
+    public async Task DisabledSummaryDoesNotExecuteAnExistingJob()
+    {
+        var clock = new TestClock(Evening);
+        using var http = new HttpClient(new TestHttpHandler((_, _) => Task.FromResult(EligibleSummary())));
+        var executor = MakeExecutor(http, clock, dailySummaryEnabled: false);
+        var id = await InsertPendingAsync(clock);
+
+        await executor.ExecuteOneAsync(await ClaimAsync(executor, clock), default);
+
+        Assert.Equal(JobStatus.Skipped, (await GetAsync(id)).Status);
+        Assert.False(await fixture.Database.GetCollection<OutboxEvent>("outboxEvents")
+            .Find(FilterDefinition<OutboxEvent>.Empty).AnyAsync());
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
     [InlineData(HttpStatusCode.TooManyRequests)]
@@ -64,7 +79,10 @@ public sealed class ExecutionTests(WorkerInfrastructureFixture fixture)
         using var http = new HttpClient(new TestHttpHandler((_, _) =>
             Task.FromResult(new HttpResponseMessage((HttpStatusCode)status)
             {
-                Content = status == 200 ? JsonContent.Create(new ReminderEligibility(false, "Reading", 7)) : null
+                Content = status == 200 ? JsonContent.Create(new ReminderEligibility(false, "Reading", 7)
+                {
+                    ScheduledDueAtUtc = Evening.AddMinutes(-30)
+                }) : null
             })));
         var executor = MakeExecutor(http, clock);
         var id = await InsertPendingAsync(clock, JobKind.HabitReminder);
@@ -72,6 +90,7 @@ public sealed class ExecutionTests(WorkerInfrastructureFixture fixture)
         var stored = await GetAsync(id);
         Assert.Equal(expectedStatus, stored.Status);
         Assert.Equal(reason, stored.LastErrorCode);
+        Assert.Equal(status == 200 ? Evening.AddMinutes(-30).UtcDateTime : (DateTime?)null, stored.ScheduledDueAtUtc);
         Assert.Equal(0, stored.HttpFailureCount);
         Assert.False(await fixture.Database.GetCollection<OutboxEvent>("outboxEvents")
             .Find(FilterDefinition<OutboxEvent>.Empty).AnyAsync());
@@ -113,6 +132,7 @@ public sealed class ExecutionTests(WorkerInfrastructureFixture fixture)
         var stored = await GetAsync(id);
         Assert.Equal(JobStatus.Pending, stored.Status);
         Assert.Equal(Evening.AddHours(1).UtcDateTime, stored.DueAtUtc);
+        Assert.Equal(Evening.AddHours(1).UtcDateTime, stored.ScheduledDueAtUtc);
         Assert.Equal(2, stored.HttpFailureCount);
         Assert.Equal(7, stored.ScheduleRevision);
     }
@@ -241,9 +261,9 @@ public sealed class ExecutionTests(WorkerInfrastructureFixture fixture)
 
     private Task<Job> GetAsync(Guid id) => Jobs.Find(x => x.Id == id).SingleAsync();
 
-    private JobExecutorService MakeExecutor(HttpClient http, TestClock clock, int renewalSeconds = 30)
+    private JobExecutorService MakeExecutor(HttpClient http, TestClock clock, int renewalSeconds = 30, bool dailySummaryEnabled = true)
     {
-        var options = Options.Create(new WorkerOptions { LeaseRenewalSeconds = renewalSeconds });
+        var options = Options.Create(new WorkerOptions { LeaseRenewalSeconds = renewalSeconds, DailySummaryEnabled = dailySummaryEnabled });
         return new JobExecutorService(new JobExecutorRepository(fixture.Database), new MongoOutbox(fixture.Database),
             new MongoTransactions(fixture.MongoClient), new WorkerApiClient(http, options),
             new ScheduleRepository(fixture.Database), new BootstrapReadiness(), options, clock,

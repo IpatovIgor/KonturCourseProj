@@ -10,6 +10,7 @@ internal static class ScheduleValidation
         if (!ObjectId.TryParse(snapshot.UserId, out _) || !ObjectId.TryParse(snapshot.HabitId, out _) ||
             snapshot.Revision < 0 || snapshot.Status is not ("active" or "archived") ||
             !IsDate(snapshot.StartDate) || !IsTime(snapshot.ReminderLocalTime) ||
+            (snapshot.ReminderFirstEligibleDate is { } first && !IsDate(first)) ||
             !IsZone(snapshot.TimeZoneId) || snapshot.ScheduleVersions is not { Length: > 0 })
             throw new InvalidScheduleException("Invalid habit snapshot.");
 

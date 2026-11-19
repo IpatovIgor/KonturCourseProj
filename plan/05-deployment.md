@@ -1,26 +1,23 @@
-# Развёртывание — план реализации
+# Развёртывание в Яндекс Облаке
 
-**Статус:** полный локальный и облачный стенд предстоит создать; уже есть `compose.webapi-tests.yaml`, `.env.example` и `deploy/rabbitmq/definitions.json`. **Комплект исполнителю:** этот файл + `plan/README.md`, где полностью описаны сервисы, конфигурация, пять связей брокера, probes и внешние маршруты. Другие планы не обязательны для подготовки манифестов.
+**Статус.** Полный локальный стенд спринта 3 описан в [README](../README.md). Этот план фиксирует дальнейшую облачную выкладку и подготовку производственной конфигурации.
 
-**Результат:** Dockerfile четырёх приложений, полный Compose с запуском одной командой, k3s-манифесты и инструкции bootstrap/обновления/восстановления. Манифесты не заменяют реализацию сервисов: если соответствующего проекта ещё нет, сборку и rollout пометить ожидающими интеграции. Настройка облачного аккаунта, DNS и секретов требует реальных значений команды; не придумывать их.
-
-**Цель** — обеспечить воспроизводимый локальный запуск и публичный учебный стенд на одной VM в Яндекс Облаке с k3s.
+**Цель** — развернуть публичный учебный стенд на одной VM в Яндекс Облаке с k3s. Результат этого этапа включает облачные манифесты, запуск по HTTPS и инструкции по обновлению, откату и восстановлению.
 
 **Основа** — [архитектура](README.md), [топология RabbitMQ](04-rabbitmq.md), [телеметрия](06-observability.md), [CI/CD](07-ci-cd-and-acceptance.md).
 
-## Сборка и локальный запуск
+## Готовые компоненты
 
-- [ ] Добавить Dockerfile для WebAPI, Worker и Notifications с отдельными стадиями `dotnet restore`, `dotnet publish` и runtime. Dockerfile фронтенда выполняет `npm ci`, `npm run build` и обслуживает `dist` через Nginx с fallback для React. Контейнеры backend слушают `0.0.0.0:80`. Запускать их от непривилегированного пользователя с настройкой, разрешающей bind порта 80.
-- [ ] В корне добавить `compose.yaml`, `.env.example` с именами переменных и скрипты `scripts/dev-up.ps1`, `scripts/dev-down.ps1`. Поднять MongoDB replica set, RabbitMQ, три сервиса и React. Включать ELK, Prometheus и Jaeger профилем `observability`. Приложение доступно по `http://localhost:8080`. Проксировать REST и WebSocket с того же origin.
-- [ ] Подготовить идемпотентную инициализацию MongoDB. Один узел `rs0`, адрес `mongo:27017` доступен приложениям. Включить auth и keyfile для replica set. Создать отдельные учётные записи для WebAPI, Worker и Notifications с доступом только к своей базе. Сохранить существующие имя базы WebAPI и имя коллекции пользователей в конфигурации миграции. Подготовить virtual host RabbitMQ и bindings из [топологии](04-rabbitmq.md) до запуска издателей.
-- [ ] Для Compose, CI и k3s хранить декларацию топологии RabbitMQ в репозитории без учётных данных. Bootstrap проверяет наличие обеих очередей и всех bindings. Несовместимая топология останавливает запуск издателей. В корневом README описать exchange, очереди и порядок проверки.
-- [ ] Описать запуск и остановку в корневом README. Для интеграционных тестов поднимать отдельную инфраструктуру и временные базы. Состояние сохраняется между обычными запусками Compose.
+- Dockerfile для WebAPI, Worker, Notifications и фронтенда уже подключены в [`compose.yaml`](../compose.yaml). Этот файл задаёт контексты сборки, постоянные тома, MongoDB replica set, RabbitMQ и проверки готовности. Локальные команды запуска и остановки собраны в [README](../README.md).
+- RabbitMQ использует готовые [`definitions.json`](../deploy/rabbitmq/definitions.json) и [`bootstrap.sh`](../deploy/rabbitmq/bootstrap.sh). При подготовке Kubernetes Job переиспользовать ту же декларацию и проверку топологии. Изолированные интеграционные тесты запускаются через [`compose.webapi-tests.yaml`](../compose.webapi-tests.yaml).
+- В `deploy/k8s` есть [Deployment и Service для Notifications](../deploy/k8s/notifications.yaml) и [шаблон Ingress](../deploy/k8s/habit-tracker-ingress.yaml). Их нужно довести до облачной конфигурации с опубликованным образом, секретами и реальным доменом.
 
 ## Kubernetes в Яндекс Облаке
 
 - [ ] Создать Linux VM с постоянным публичным IP, DNS-записью и диском для данных. Установить k3s, включить шифрование Secrets на диске и использовать штатные Traefik, ServiceLB и `local-path`. Открыть извне `80/443`, SSH ограничить адресами администраторов. Kubernetes API доступен локальному runner. [Компоненты k3s](https://docs.k3s.io/installation/packaged-components)
 - [ ] Создать Yandex Container Registry. Разделить сервисные аккаунты публикации и скачивания образов. Хранить ключ публикации в GitHub Environment, ключ скачивания — в `imagePullSecret` кластера. Публиковать четыре образа `webapi`, `worker`, `notifications`, `frontend` с тегом коммита и разворачивать по digest. [Доступ к приватным образам](https://yandex.cloud/en/docs/managed-kubernetes/operations/private-registries)
 - [ ] Подготовить `deploy/k8s` с namespace `habit-tracker`, ConfigMap, шаблонами ссылок на Secret, Deployments, StatefulSets, Services, PVC, probes и NetworkPolicy. MongoDB и RabbitMQ используют по одной реплике и постоянному тому. Инициализацию БД и топологии выполнить отдельным Job, дождаться успеха до старта приложений. Backend, БД, брокер и телеметрия используют ClusterIP. В стартовой конфигурации — одна реплика каждого backend, для проверки lease Worker масштабируется до двух. Notifications использует `Recreate`.
+- [ ] Настроить аутентификацию MongoDB в облачной конфигурации. Для replica set смонтировать keyfile с подходящими правами. Создать для WebAPI, Worker и Notifications учётные записи с доступом только к своим базам. URI включают `replicaSet=rs0` и нужный `authSource`. Если переносятся существующие данные, сохранить имя базы WebAPI и коллекции пользователей.
 - [ ] Настроить HTTPS на Traefik с cert-manager и сертификатом Let's Encrypt. Маршруты `/api/notifications` и `/hubs/notifications` идут в Notifications, остальные `/api` — в WebAPI, `/` — во frontend. Проверить маршрутизацию более специфичных путей и WebSocket Upgrade. Закрыть внутренние маршруты, RabbitMQ Management, БД и панели телеметрии от внешнего доступа. Для администрирования использовать `kubectl port-forward`.
 - [ ] TLS завершается на ingress. Внутри кластера сервисы используют HTTP. Настроить forwarded headers только от доверенного прокси и внешнее перенаправление на HTTPS. Ограничить доступ к внутреннему API Worker сетевой политикой и ключом.
 - [ ] Передавать `ASPNETCORE_HTTP_PORTS`, `MongoDbSettings__ConnectionString`, `MongoDbSettings__DatabaseName`, `MongoDbSettings__UsersCollectionName`, `JwtSettings__Issuer`, `JwtSettings__Audience`, `JwtSettings__Secret`, `WorkerApi__BaseUrl`, `WorkerApi__SharedKey`, `RabbitMq__*`, `OTEL_EXPORTER_OTLP_ENDPOINT` и `Features__NotificationsEnabled` через env. Секреты подключать только к сервисам, которые их используют. Один и тот же JWT-ключ нужен WebAPI и Notifications. `Features__NotificationsEnabled=false` на WebAPI скрывает новые операции настройки и отключает запись новых событий. Существующие HTTP-операции продолжаются, накопленный outbox сохраняется.
@@ -29,35 +26,19 @@
 
 - [ ] Зафиксировать CPU, память и объёмы хранения для каждого контейнера после пробного запуска полного стека на VM. Проверить, что ELK и MongoDB укладываются в выделенные ресурсы при одновременной работе.
 - [ ] Перед первым обновлением сделать согласованную резервную копию MongoDB и сохранить определения RabbitMQ. Обновить сначала топологию и совместимых потребителей, затем WebAPI и фронтенд. При переносе существующей БД восстановить данные до включения обработки и проверить вход старого аккаунта.
-- [ ] Проверить `kubectl rollout status` для всех приложений, успешный HTTPS и сценарии из [приёмки](07-ci-cd-and-acceptance.md). При ошибке развернуть предыдущий набор digest. Схемы и контракты при первой выкладке добавляются совместимо, PVC сохраняются.
+- [ ] Проверить `kubectl rollout status` для всех приложений, успешный HTTPS и сценарии из [приёмки](07-ci-cd-and-acceptance.md). При ошибке развернуть предыдущий набор digest с сохранением PVC. Для возврата к образам до спринта 3 сначала выполнить [миграцию отката](#откат-на-версию-до-спринта-3).
 - [ ] Описать резервное копирование вне VM и тест восстановления MongoDB. Проверить сохранность очередей при обычном перезапуске RabbitMQ. Потеря диска RabbitMQ требует восстановления топологии и выборочной повторной публикации из сохранённых outbox. Документировать окно хранения и ограничения восстановления данных одного узла.
 
-## Что создать и как разделить конфигурацию
+## Что добавить для облака
 
 | Артефакт | Содержание |
 |---|---|
-| `Auth/{WebApplication1,HabitTracker.Worker,HabitTracker.Notifications}/Dockerfile` | Отдельный multi-stage образ; context `Auth`, включая Directory.Build.props и общие библиотеки |
-| `Auth/.dockerignore` | Исключить bin/obj, локальные секреты и результаты тестов, сохранить csproj и общие зависимости |
-| `habit-frontend/Dockerfile`, `.dockerignore`, `nginx.conf` | npm ci/build, статический runtime, same-origin REST и WebSocket proxy |
-| `compose.yaml`, `.env.example` | Постоянные volumes, зависимости запуска, health, без реальных секретов |
-| `scripts/dev-up.ps1`, `scripts/dev-down.ps1` | Проверка обязательных env, запуск/остановка без удаления пользовательских данных |
-| `deploy/mongo/` | Идемпотентные скрипты replica set, пользователей и прав; keyfile монтируется отдельно |
-| `deploy/rabbitmq/` | Сохранить definitions.json; добавить bootstrap/проверку readiness топологии |
-| `deploy/k8s/` | Namespace, config, deployments/statefulsets, services, PVC, bootstrap Jobs, ingress, policies |
-| `deploy/observability/` | Точки подключения конфигурации этапа телеметрии; профиль observability |
-| `README.md`, `docs/deployment.md`, `docs/recovery.md` | Команды запуска, схема ресурсов, выпуск версии, backup/restore |
+| `deploy/mongo/` | Скрипты облачной инициализации replica set, пользователей и прав |
+| `deploy/k8s/` | Дополнить имеющиеся манифесты недостающими ресурсами и настройками облака |
+| `deploy/observability/` | Подключение телеметрии по [отдельному плану](06-observability.md) |
+| `docs/deployment.md`, `docs/recovery.md` | Инструкции по выкладке, резервному копированию и восстановлению |
 
 Структуру манифестов можно выбрать обычными YAML или Kustomize; для первого этапа достаточно YAML + overlays для отличий среды. Не вводить Helm/operator/service mesh только ради этого плана. Версии образов закрепить; production образы приложений задавать digest из CI.
-
-### Минимальный состав полного Compose
-
-Сервисы: `mongo`, Mongo bootstrap, `rabbitmq`, Rabbit bootstrap, `webapi`, `worker`, `notifications`, `frontend`. Три базы — `habit_tracker_auth`, `habit_tracker_worker`, `habit_tracker_notifications` (первое имя сверить с существующей конфигурацией). Каждому приложению отдельный Mongo user с readWrite только своей базы; root используется только bootstrap/оператором. URI включают authSource правильной БД и replicaSet=rs0. Адрес участника replica set должен разрешаться внутри сети приложений, например `mongo:27017`.
-
-Порядок готовности: Mongo writable primary → пользователи/права; Rabbit vhost/очереди/bindings → приложения; WebAPI готов → Worker завершает bootstrap → Worker ready. Notifications зависит от Mongo и Rabbit, frontend proxy может стартовать раньше backend, но общий smoke ждёт их готовности. Не создавать циклическую зависимость «WebAPI ждёт Worker, Worker ждёт WebAPI».
-
-Mongo keyfile должен иметь допустимые права и владельца; проверить это в Linux-контейнере, особенно если запуск с Windows. Секреты из локальных файлов/Compose secrets не копировать в image и git. Bootstrap после обычного restart не пересоздаёт базы и не сбрасывает пароли.
-
-`dev-down.ps1` выполняет обычный down без `-v`. Удаление volumes — отдельная явно разрушительная операция, не поведение остановки. Тестовый Compose остаётся отдельным и может удалять только свои временные volumes. Порты Mongo/Rabbit Management не публиковать на все интерфейсы хоста; доступ администратора через localhost/port-forward.
 
 ### Маршрутизация и HTTP
 
@@ -77,7 +58,7 @@ Backend слушает 80 на всех интерфейсах контейне�
 
 - Одна VM, k3s, namespace `habit-tracker`; `local-path` PVC сохраняют состояние между перезапусками pod, но не защищают от потери VM/диска. Это учебный стенд, не HA-кластер.
 - WebAPI/Worker/Notifications — Deployment; MongoDB/RabbitMQ — StatefulSet с PVC. Notifications replicas=1 и Recreate; Worker допускает scale до 2.
-- Bootstrap Jobs идемпотентны и имеют явный признак успеха; workflow ждёт завершения прежде приложения. `kubectl apply` сам не гарантирует необходимый порядок готовности.
+- Дождаться writable primary MongoDB, создания учётных записей и готовности топологии RabbitMQ до старта приложений. Bootstrap Jobs идемпотентны. Worker завершает загрузку расписаний после готовности WebAPI.
 - Startup probe даёт время на индексы/загрузку, liveness проверяет только процесс, readiness — зависимости по README. Проба не пишет данные. При длительном bootstrap не убивать исправный Worker liveness-проверкой зависимостей.
 - NetworkPolicy разрешает ingress → public backend, Worker → WebAPI internal, приложения → свои зависимости и DNS, monitoring → metrics. Проверить фактическую работу сетевой политики в выбранном k3s, не считать наличие YAML доказательством изоляции.
 - Secrets: Mongo service credentials, Rabbit credentials, общий Worker key только WebAPI/Worker, JWT signing key только WebAPI/Notifications, registry pull credentials у workload. Frontend не получает backend secrets через VITE-переменные.
@@ -85,17 +66,11 @@ Backend слушает 80 на всех интерфейсах контейне�
 
 ## Проверка и команды для сдачи
 
-После создания Dockerfile и Compose, из корня:
+Перед выкладкой проверить конфигурацию и собрать существующие образы из корня репозитория. Команды запуска и остановки локального стенда приведены в [README](../README.md).
 
 ```powershell
-docker build -f Auth/WebApplication1/Dockerfile -t habit-webapi:local Auth
-docker build -f Auth/HabitTracker.Worker/Dockerfile -t habit-worker:local Auth
-docker build -f Auth/HabitTracker.Notifications/Dockerfile -t habit-notifications:local Auth
-docker build -t habit-frontend:local habit-frontend
 docker compose config --quiet
-./scripts/dev-up.ps1
-# Проверить приложение на http://localhost:8080
-./scripts/dev-down.ps1
+docker compose build
 ```
 
 Не печатать полный интерполированный `docker compose config` в общий лог: он может раскрыть env secrets. Для облака перед применением использовать dry-run и diff в настроенном контексте; настоящая VM/DNS/registry должны быть предоставлены владельцем среды. Подготовить отдельные команды bootstrap и rollout в создаваемой инструкции, включая явную проверку namespace/context.
@@ -111,7 +86,13 @@ docker compose config --quiet
 | Две реплики Worker | Один логический результат, lease восстановлен после остановки владельца |
 | Внешняя сеть | HTTPS и WebSocket работают, internal/management не идут во внутренние upstream |
 | Обновление и rollback | Новые digests применились; предыдущий комплект можно вернуть без удаления PVC |
-| Restore | В отдельной среде восстановлены согласованные Mongo данные и topology, проверены вход/история |
+| Восстановление | В отдельной среде восстановлены согласованные данные MongoDB и топология RabbitMQ, проверены вход и история |
+
+### Откат на версию до спринта 3
+
+Старые образы WebAPI и Worker не читают документы с `reminderFirstEligibleDate`. Перед их запуском остановите новые WebAPI и Worker, сохраните резервную копию MongoDB и выполните `mongosh --nodb --file scripts/rollback-reminder-date.js` дважды. Укажите `HABIT_TRACKER_ROLLBACK_MONGO_URI` и `HABIT_TRACKER_ROLLBACK_DATABASE` для соответствующей базы, а в `HABIT_TRACKER_ROLLBACK_ROLE` передайте `webapi` для `habits` и `worker` для `habitSchedules`.
+
+Скрипт удаляет только поле с границей первой отправки из выбранной коллекции. Время напоминания, отметки, история и уже рассчитанные указатели Worker сохраняются. Повторный запуск безопасен. После выполнения для обеих баз можно запускать старые образы с прежними томами.
 
 Резервная копия должна охватывать связанные состояние/инбокс/аутбокс; процедура фиксирует момент и границы согласованности. Published outbox хранится 30 дней — после потери брокерного диска возможен адресный replay сохранившихся событий с прежними ID, но это не обещание восстановления за любой период. Обновлять сначала совместимую топологию и consumers, затем publishers и UI.
 

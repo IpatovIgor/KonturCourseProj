@@ -363,7 +363,7 @@ public sealed partial class HabitsHttpTests
         return JsonNode.Parse(content)!.AsObject();
     }
 
-    private sealed class HabitsApplication(bool useRabbit = false, bool notificationsEnabled = true)
+    private sealed class HabitsApplication(bool useRabbit = false, bool notificationsEnabled = true, bool dailySummaryEnabled = true)
         : WebApplicationFactory<AuthController>
     {
         private readonly string _connectionString = Environment.GetEnvironmentVariable("KONTUR_TEST_MONGO_URI")!;
@@ -392,7 +392,8 @@ public sealed partial class HabitsHttpTests
                 ["JwtSettings:Audience"] = "habits-tests",
                 ["JwtSettings:ExpiryMinutes"] = "60",
                 ["WorkerApi:SharedKey"] = "worker-test-key",
-                ["Features:NotificationsEnabled"] = notificationsEnabled.ToString()
+                ["Features:NotificationsEnabled"] = notificationsEnabled.ToString(),
+                ["Features:DailySummaryEnabled"] = dailySummaryEnabled.ToString()
             }));
             builder.ConfigureServices(services =>
             {

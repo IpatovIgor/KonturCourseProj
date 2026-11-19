@@ -14,6 +14,7 @@ public sealed class WorkerOptions
     public int HttpTimeoutSeconds { get; set; } = 10;
     public int BootstrapRetrySeconds { get; set; } = 5;
     public bool ReloadSchedulesOnStartup { get; set; }
+    public bool DailySummaryEnabled { get; set; } = true;
 
     public void Validate()
     {

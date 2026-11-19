@@ -5,6 +5,7 @@ using HabitTracker.Messaging;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.Options;
@@ -41,6 +42,7 @@ builder.Services.AddSingleton<IUserRepository>(services => services.GetRequiredS
 builder.Services.AddSingleton<HabitRepository>();
 builder.Services.AddSingleton<IHabitRepository>(services => services.GetRequiredService<HabitRepository>());
 builder.Services.AddHostedService<MongoIndexInitializer>();
+builder.Services.AddHealthChecks().AddCheck<MongoReadinessCheck>("mongo", tags: ["ready"], timeout: TimeSpan.FromSeconds(2));
 builder.Services.AddSingleton<MongoOutbox>();
 builder.Services.AddSingleton<RequestEventContext>();
 builder.Services.AddHttpContextAccessor();
@@ -81,8 +83,7 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
 builder.Services.AddOptions<MvcOptions>()
     .Configure<IOptions<NotificationFeatures>>((mvc, features) =>
     {
-        if (!features.Value.NotificationsEnabled)
-            mvc.Conventions.Add(new HideNotificationSettings());
+        mvc.Conventions.Add(new HideNotificationSettings(features.Value.NotificationsEnabled, features.Value.DailySummaryEnabled));
     });
 builder.Services.AddAuthorization();
 
@@ -176,7 +177,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseExceptionHandler();
-app.UseHttpsRedirection();
+if (app.Configuration.GetValue("Http:UseHttpsRedirection", true))
+    app.UseHttpsRedirection();
 
 app.UseCors("AllowReactApp");
 
@@ -186,6 +188,8 @@ app.UseAuthorization();
 
 // 8. Включаем маршрутизацию запросов к контроллерам
 app.MapControllers();
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 
 // 9. Запускаем приложение
 app.Run();

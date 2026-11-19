@@ -45,51 +45,69 @@ public sealed class SchedulerService(
     {
         var now = clock.GetUtcNow();
         await ScheduleHabitsAsync(now, ct);
-        await ScheduleSummariesAsync(now, ct);
+        if (options.Value.DailySummaryEnabled)
+            await ScheduleSummariesAsync(now, ct);
     }
 
     private async Task ScheduleHabitsAsync(DateTimeOffset now, CancellationToken ct)
     {
-        var due = await schedules.FindDueHabitsAsync(now.UtcDateTime, options.Value.BatchSize, ct);
-        foreach (var initial in due)
+        HabitSchedule? after = null;
+        var remaining = options.Value.BatchSize;
+        while (remaining > 0)
         {
-            ct.ThrowIfCancellationRequested();
-            var current = initial;
-            for (var attempt = 0; attempt < 3; attempt++)
-            {
-                try
-                {
-                    await transactions.RunAsync(async session =>
-                    {
-                        var dueSlot = CurrentSlot(current.NextLocalDate!, current.NextDueAtUtc!.Value, current.TimeZoneId, now)
-                            ?? calculator.NextHabitDue(current, now, afterLocalDate: null);
-                        var slot = dueSlot;
-                        if (dueSlot is not null && dueSlot.DueAtUtc <= now.UtcDateTime)
-                        {
-                            await jobs.UpsertPendingAsync(session,
-                                NewJob(current, dueSlot.LocalDate, dueSlot.DueAtUtc, now), ct);
-                            slot = calculator.NextHabitDue(current, now, dueSlot.LocalDate);
-                        }
+            var due = await schedules.FindDueHabitsAsync(now.UtcDateTime, remaining, ct, after);
+            if (due.Count == 0)
+                return;
 
-                        var advanced = await schedules.TryAdvanceHabitAsync(session, current,
-                            slot?.DueAtUtc, slot?.LocalDate, ct);
-                        if (!advanced)
-                            throw new ScheduleRaceException();
-                        return true;
-                    }, ct);
-                    break;
-                }
-                catch (ScheduleRaceException)
+            foreach (var habit in due)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (await TryScheduleHabitAsync(habit, now, ct))
+                    remaining--;
+            }
+
+            // A held lease keeps its slot due for the next tick, but this tick can visit later slots.
+            after = due[^1];
+        }
+    }
+
+    private async Task<bool> TryScheduleHabitAsync(HabitSchedule habit, DateTimeOffset now, CancellationToken ct)
+    {
+        var current = habit;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                return await transactions.RunAsync(async session =>
                 {
-                    logger.LogInformation("Schedule race for habit {HabitId}; retrying", initial.Id);
-                    var fresh = await schedules.FindDueHabitsAsync(now.UtcDateTime, options.Value.BatchSize, ct);
-                    var match = fresh.FirstOrDefault(x => x.Id == initial.Id);
-                    if (match is null)
-                        break;
-                    current = match;
-                }
+                    var dueSlot = CurrentSlot(current.NextLocalDate!, current.NextDueAtUtc!.Value, current.TimeZoneId, now)
+                        ?? calculator.NextHabitDue(current, now, afterLocalDate: null);
+                    var slot = dueSlot;
+                    if (dueSlot is not null && dueSlot.DueAtUtc <= now.UtcDateTime)
+                    {
+                        if (!await jobs.UpsertPendingAsync(session,
+                            NewJob(current, dueSlot.LocalDate, dueSlot.DueAtUtc, now), ct))
+                            return false;
+                        slot = calculator.NextHabitDue(current, now, dueSlot.LocalDate);
+                    }
+
+                    var advanced = await schedules.TryAdvanceHabitAsync(session, current,
+                        slot?.DueAtUtc, slot?.LocalDate, ct);
+                    if (!advanced)
+                        throw new ScheduleRaceException();
+                    return true;
+                }, ct);
+            }
+            catch (ScheduleRaceException)
+            {
+                logger.LogInformation("Schedule race for habit {HabitId}; retrying", habit.Id);
+                var fresh = await schedules.FindDueHabitAsync(habit.Id, now.UtcDateTime, ct);
+                if (fresh is null)
+                    break;
+                current = fresh;
             }
         }
+        return false;
     }
 
     private async Task ScheduleSummariesAsync(DateTimeOffset now, CancellationToken ct)
@@ -148,6 +166,7 @@ public sealed class SchedulerService(
         HabitKey = habit.Id,
         LocalDate = localDate,
         DueAtUtc = dueAtUtc,
+        ScheduledDueAtUtc = dueAtUtc,
         TimeZoneId = habit.TimeZoneId,
         ScheduleRevision = habit.Revision,
         LastCorrelationId = habit.LastCorrelationId,

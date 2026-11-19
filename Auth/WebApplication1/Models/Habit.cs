@@ -42,6 +42,8 @@ public sealed class Habit
     public bool ReminderEnabled { get; set; }
     [BsonElement("reminderLocalTime")]
     public string ReminderLocalTime { get; set; } = "20:00";
+    [BsonElement("reminderFirstEligibleDate"), BsonIgnoreIfNull]
+    public string? ReminderFirstEligibleDate { get; set; }
 
     [BsonElement("revision")]
     public long Revision { get; set; }

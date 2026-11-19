@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Serialization;
 using BackEnd.Data;
 using HabitTracker.Contracts;
+using Microsoft.Extensions.Options;
 using MongoDB.Bson;
 
 namespace BackEnd.Services;
@@ -14,6 +15,8 @@ public sealed record ReminderEligibility(bool Eligible, string HabitName, long R
     public string? Reason { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? NextDueAtUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? ScheduledDueAtUtc { get; init; }
 }
 
 public sealed record SummaryEligibility(bool Eligible, int Planned, int Completed, int Pending, long Revision)
@@ -24,7 +27,8 @@ public sealed record SummaryEligibility(bool Eligible, int Planned, int Complete
     public DateTimeOffset? NextDueAtUtc { get; init; }
 }
 
-public sealed class WorkerSchedules(WorkerScheduleRepository repository, TimeProvider clock)
+public sealed class WorkerSchedules(WorkerScheduleRepository repository, TimeProvider clock,
+    IOptions<NotificationFeatures> features)
 {
     public async Task<SchedulePage<HabitScheduleSnapshot>> HabitPageAsync(string? after, int limit, CancellationToken ct)
     {
@@ -51,14 +55,15 @@ public sealed class WorkerSchedules(WorkerScheduleRepository repository, TimePro
 
         var now = clock.GetUtcNow();
         var result = new ReminderEligibility(false, habit.Name, habit.Revision);
-        if (!habit.ReminderEnabled || habit.Status != "active" || completed
+        if (!habit.ReminderEnabled || habit.Status != "active"
+            || string.CompareOrdinal(text, habit.ReminderFirstEligibleDate) < 0
             || date != NotificationCalendar.LocalDate(now, user.TimeZoneId) || !HabitService.IsScheduled(habit, date, text))
             return result;
 
         var due = DueAtUtc(date, habit.ReminderLocalTime, user.TimeZoneId);
         return now < due
             ? result with { Reason = "notDueYet", NextDueAtUtc = due }
-            : result with { Eligible = true };
+            : result with { Eligible = !completed, ScheduledDueAtUtc = completed ? due : null };
     }
 
     public async Task<SummaryEligibility> SummaryAsync(ObjectId userId, string text, CancellationToken ct)
@@ -72,7 +77,7 @@ public sealed class WorkerSchedules(WorkerScheduleRepository repository, TimePro
         var completed = planned.Count(habit => marks.Contains(habit.Id));
         var result = new SummaryEligibility(false, planned.Length, completed, planned.Length - completed, user.SummaryRevision);
         var now = clock.GetUtcNow();
-        if (!user.SummaryEnabled || date != NotificationCalendar.LocalDate(now, user.TimeZoneId))
+        if (!features.Value.DailySummaryEnabled || !user.SummaryEnabled || date != NotificationCalendar.LocalDate(now, user.TimeZoneId))
             return result;
 
         var due = DueAtUtc(date, user.SummaryLocalTime, user.TimeZoneId);
