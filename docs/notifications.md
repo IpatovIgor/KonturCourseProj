@@ -40,24 +40,7 @@ docker compose -f compose.webapi-tests.yaml -p kontur-notifications-tests down -
 
 Соберите образ из корня (`docker build -f Auth/HabitTracker.Notifications/Dockerfile -t habit-tracker-notifications:local .`). Манифест [Notifications](../deploy/k8s/notifications.yaml) задаёт HTTP-порт 80, проверки готовности и одну реплику со стратегией `Recreate`. Для стенда подставьте опубликованный образ и создайте в пространстве `habit-tracker` Secret `notifications` с перечисленными выше переменными. MongoDB и RabbitMQ должны быть доступны из пода. До запуска издателя импортируйте определения RabbitMQ.
 
-Добавьте оба маршрута в список `spec.rules[].http.paths` существующего HTTPS Ingress. Они должны быть специфичнее общего `/api`. Traefik проксирует WebSocket Upgrade к тому же сервису.
-
-```yaml
-- path: /api/notifications
-  pathType: Prefix
-  backend:
-    service:
-      name: notifications
-      port:
-        number: 80
-- path: /hubs/notifications
-  pathType: Prefix
-  backend:
-    service:
-      name: notifications
-      port:
-        number: 80
-```
+Подставьте домен и имя TLS Secret в [манифест Ingress](../deploy/k8s/habit-tracker-ingress.yaml) и проверьте имена и порты сервисов `frontend`, `webapi` и `notifications`. Маршруты `/api/notifications` и `/hubs/notifications` ведут в Notifications. Traefik проксирует WebSocket Upgrade, а для отдельного маршрута Hub выключены access-логи и трассировка.
 
 При Nginx вместо Ingress добавьте в `server` отдельные locations для этих префиксов. Для Hub используйте `proxy_http_version 1.1`, заголовки `Upgrade` и `Connection` и `proxy_read_timeout 120s`. Сохраните исходный путь при передаче в `http://notifications:80`. Для location Hub отключите access-лог и вывод ошибок с исходным URL.
 

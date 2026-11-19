@@ -2,7 +2,7 @@
 
 **Комплект:** этот файл + `plan/README.md`. README содержит полные C# records, сигнатуры существующих библиотек, версии пакетов и общие правила. Этот документ определяет задачи владельца транспорта и проверки совместимости всех сервисов.
 
-**Статус:** `HabitTracker.Contracts`, `HabitTracker.Messaging`, JSON-топология и тест публикации WebAPI уже реализованы. Consumers Worker/Notifications, их retry/DLQ и эксплуатационные процедуры ещё нужно подключить и проверить. Не заменять существующий outbox другой схемой без отдельного решения команды.
+**Статус:** общий транспорт, consumers, retry/DLQ, проверка топологии, адресный replay и локальный мониторинг RabbitMQ реализованы. Порядок запуска и диагностики приведён в [инструкции эксплуатации](../docs/rabbitmq-operations.md).
 
 **Цель** — закрепить контракты и обеспечить асинхронную доставку от WebAPI к Worker и от Worker к Notifications.
 
@@ -57,7 +57,9 @@ WebAPI и Worker записывают событие через сессию т�
 | `deploy/rabbitmq/definitions.json` | Уже содержит exchanges, две очереди и пять bindings; credentials не хранить здесь |
 | `Auth/HabitTracker.Worker/Program.cs`, `Consumers/` | Владелец Worker подключает два consumer к одному endpoint |
 | `Auth/HabitTracker.Notifications/Program.cs`, `Consumers/` | Владелец Notifications подключает один consumer |
-| `docs/rabbitmq-operations.md` | Создать инструкцию диагностики, bootstrap, безопасного replay |
+| `deploy/rabbitmq/bootstrap.sh`, `bootstrap.test.mjs` | Проверка параметров и связей до запуска издателей, проверка чистого и повторного импорта и несовместимой очереди |
+| `docs/rabbitmq-operations.md`, `scripts/replay-message/` | Инструкция и CLI адресного восстановления с dry-run и подтверждением отдельной копии |
+| `deploy/rabbitmq/prometheus.yml`, `prometheus-alerts.yml` | Сбор метрик очередей и правило для `_error`/`_skipped` |
 
 Транспортный этап не реализует бизнес-логику consumer за владельцев сервисов. Его результат — единые настройки, декларация топологии, проверка регистрации и интеграционные тесты. Если исходники недоступны, предоставить точные блоки DI для встраивания и контрактные тесты, не переписывая неизвестный Program.cs.
 
@@ -83,13 +85,13 @@ Bootstrap создаёт vhost, три contract exchange, два endpoint exchan
 
 ## План проверки транспорта
 
-- [ ] **Контракт:** JSON roundtrip каждого v1 сохраняет UUID, long revision, UTC и nullable. В брокере MassTransit envelope имеет правильный message type; MessageId/CorrelationId совпадают с полями, trace headers переданы.
-- [ ] **Топология:** чистый bootstrap, повторный bootstrap и несовместимые параметры. Сохранённый пример вывода подтверждает две очереди и все пять связей.
-- [ ] **Маршрутизация:** HabitChangedV1 и SummarySettingsChangedV1 поступают только в Worker endpoint; NotificationReadyV1 — в Notifications endpoint. Нет конкурирующих автоматически созданных очередей тех же consumer.
-- [ ] **Простой:** consumer остановлен, publisher подтверждает запись; сообщение остаётся ready и обрабатывается после старта. Брокер остановлен — outbox остаётся pending/publishing до восстановления lease.
-- [ ] **Повтор:** повторить доставку одного eventId; Worker применяет одну операцию inbox; Notifications хранит один notificationId. Повтор SignalR допустим и проверяется клиентом отдельно.
-- [ ] **Ошибка:** временный сбой повторяется 1/5/15 секунд, затем error; malformed payload сразу error; валидный envelope без подходящего consumer — skipped. Проверять именно очередь endpoint, а не произвольную одноимённую тестовую коллекцию.
-- [ ] **Восстановление:** replay после исправления даёт один логический результат; ID сохранены. В отчёте указать число физических доставок и логических результатов отдельно.
+- [x] **Контракт:** JSON roundtrip каждого v1 сохраняет UUID, long revision, UTC и nullable. В брокере MassTransit envelope имеет правильный message type; MessageId/CorrelationId совпадают с полями, trace headers переданы.
+- [x] **Топология:** чистый bootstrap, повторный bootstrap и несовместимые параметры. Сохранённый пример вывода подтверждает две очереди и все пять связей.
+- [x] **Маршрутизация:** HabitChangedV1 и SummarySettingsChangedV1 поступают только в Worker endpoint; NotificationReadyV1 — в Notifications endpoint. Нет конкурирующих автоматически созданных очередей тех же consumer.
+- [x] **Простой:** consumer остановлен, publisher подтверждает запись; сообщение остаётся ready и обрабатывается после старта. Брокер остановлен — outbox остаётся pending/publishing до восстановления lease.
+- [x] **Повтор:** повторить доставку одного eventId; Worker применяет одну операцию inbox; Notifications хранит один notificationId. Повтор SignalR допустим и проверяется клиентом отдельно.
+- [x] **Ошибка:** временный сбой повторяется 1/5/15 секунд, затем error; malformed payload сразу error; валидный envelope без подходящего consumer — skipped. Проверять именно очередь endpoint, а не произвольную одноимённую тестовую коллекцию.
+- [x] **Восстановление:** replay после исправления даёт один логический результат; ID сохранены. В отчёте указать число физических доставок и логических результатов отдельно.
 
 Тестовые издатели использовать через MassTransit, а считывание envelope допустимо через RabbitMQ Management для диагностики. Не составлять production envelope вручную без проверки type URN и headers. Для тестов выбирать изолированный broker/vhost и отделять их от теста WebAPI, блокирующего подключения.
 
@@ -100,6 +102,6 @@ Bootstrap создаёт vhost, три contract exchange, два endpoint exchan
 3. Инструментом replay прочитать исходный envelope и переотправить в **исходный receive endpoint** с сохранёнными метаданными. Публикация в exchange контракта может разослать другим подписчикам; для восстановления одного consumer нужен адресный replay.
 4. Дождаться подтверждённого результата и отсутствия нового fault. Только затем удалить конкретную обработанную копию из DLQ, не purge всей очереди.
 
-Для будущего инструмента создать, например, `scripts/replay-message` с обязательными явными source/destination/eventId и dry-run. Реальные секреты вводятся через env. Массовый replay и очистка рабочих очередей не входят в автоматический bootstrap.
+Инструмент `scripts/replay-message` принимает явные source/destination/eventId. Без `--publish` он выполняет dry-run. Подтверждение оператора относится к конкретной доставке, которую инструмент удерживает до закрытия канала. Реальные секреты вводятся через env.
 
 **Готовность:** регистрация и топология совместимы со всеми тремя сервисами, тесты доставки/повторов/error/skipped пройдены, инструкция воспроизводима. До появления consumers проверка одной публикации не закрывает весь транспортный этап.

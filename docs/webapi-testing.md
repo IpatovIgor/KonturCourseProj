@@ -11,7 +11,7 @@ $env:KONTUR_TEST_RABBIT_MANAGEMENT_URI = 'http://127.0.0.1:15673'
 $env:KONTUR_TEST_RABBIT_USER = 'webapi-test'
 $env:KONTUR_TEST_RABBIT_PASSWORD = 'webapi-test-only'
 
-dotnet test Auth/WebApplication1.sln
+dotnet test Auth/WebApplication1.sln -m:1
 
 docker compose -f compose.webapi-tests.yaml -p kontur-webapi-tests down -v
 ```
@@ -19,3 +19,5 @@ docker compose -f compose.webapi-tests.yaml -p kontur-webapi-tests down -v
 RabbitMQ-тест временно запрещает AMQP-подключения к `habit-tracker` и считывает сообщения из тестовой очереди. Используйте для него отдельный экземпляр брокера, как в Compose выше. При запуске без переменных `KONTUR_TEST_*` интеграционные тесты пропускаются.
 
 После развёртывания ingress проверьте снаружи запрос `GET /internal/v1/habit-schedules`. Ответ должен прийти от публичного прокси или фронтенда. Внутри сети тот же запрос к WebAPI с `X-Worker-Key` должен вернуть JSON-страницу, а без заголовка — `401`. Сверьте журнал маршрутизации ingress, чтобы подтвердить отсутствие запроса к upstream WebAPI со стороны публичного адреса.
+
+[Манифест Ingress](../deploy/k8s/habit-tracker-ingress.yaml) направляет в WebAPI только публичный префикс `/api`. Подставьте домен и TLS Secret стенда перед проверкой.

@@ -3,6 +3,9 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json.Nodes;
+using HabitTracker.Contracts;
+using HabitTracker.Messaging;
+using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -12,6 +15,103 @@ namespace BackEnd.Tests.Controllers;
 
 public sealed partial class HabitsHttpTests
 {
+    [RabbitFact]
+    public async Task V1EventsRouteOnlyToTheirEndpointWithWireMetadata()
+    {
+        var broker = Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_URI")!;
+        var address = new Uri(broker);
+        var vhost = $"transport-test-{Guid.NewGuid():N}";
+        var user = Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_USER")!;
+        var password = Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_PASSWORD")!;
+        var rabbit = new RabbitMqSettings { Host = broker, VirtualHost = vhost, Username = user, Password = password };
+        var bus = Bus.Factory.CreateUsingRabbitMq(rabbit.Configure);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        using var management = new HttpClient(new SocketsHttpHandler { UseProxy = false })
+        {
+            BaseAddress = new Uri(Environment.GetEnvironmentVariable("KONTUR_TEST_RABBIT_MANAGEMENT_URI")!)
+        };
+        management.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{password}")));
+        var now = DateTime.UtcNow;
+        var correlationId = Guid.NewGuid();
+        var context = new EventContext(correlationId, "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", "test=transport");
+        var userId = ObjectId.GenerateNewId().ToString();
+        var habitId = ObjectId.GenerateNewId().ToString();
+        var habit = new HabitChangedV1(Guid.NewGuid(), now, correlationId, userId, habitId, (long)int.MaxValue + 1,
+            "created", "active", "2026-01-01", [new("2026-01-01", [1])], "UTC", false, "20:00");
+        var summary = new SummarySettingsChangedV1(Guid.NewGuid(), now, correlationId, userId, 1, true, "21:00", "UTC");
+        var notification = new NotificationReadyV1(Guid.NewGuid(), now, correlationId, Guid.NewGuid(),
+            userId, "dailySummary", "2026-01-01", now, Planned: 0, Completed: 0, Pending: 0);
+
+        try
+        {
+            var definitions = JsonNode.Parse(await File.ReadAllTextAsync(
+                Path.Combine(AppContext.BaseDirectory, "rabbitmq-definitions.json"), ct))!.AsObject();
+            definitions["vhosts"]![0]!["name"] = vhost;
+            foreach (var collection in new[] { "exchanges", "queues", "bindings" })
+                foreach (var entry in definitions[collection]!.AsArray())
+                    entry!["vhost"] = vhost;
+            definitions["permissions"] = new JsonArray(new JsonObject
+            {
+                ["user"] = user, ["vhost"] = vhost, ["configure"] = ".*", ["write"] = ".*", ["read"] = ".*"
+            });
+            using var created = await management.PostAsJsonAsync("/api/definitions", definitions, ct);
+            created.EnsureSuccessStatusCode();
+            await bus.StartAsync(ct);
+            await PublishAsync(habit);
+            await PublishAsync(summary);
+            await PublishAsync(notification);
+            var factory = new ConnectionFactory
+            {
+                HostName = address.Host, Port = address.Port, VirtualHost = vhost, UserName = user, Password = password
+            };
+            await using var connection = await factory.CreateConnectionAsync(ct);
+            await using var channel = await connection.CreateChannelAsync(cancellationToken: ct);
+            var worker = await ReceiveAsync("worker-habit-events-v1");
+            var notifications = await ReceiveAsync("notifications-ready-v1");
+            Assert.Equal(2, worker.Count);
+            Assert.Single(notifications);
+            AssertEnvelope(worker, habit);
+            AssertEnvelope(worker, summary);
+            AssertEnvelope(notifications, notification);
+            Assert.Equal(habit.Revision, worker[habit.EventId]["message"]!["revision"]!.GetValue<long>());
+
+            async Task<Dictionary<Guid, JsonObject>> ReceiveAsync(string queue)
+            {
+                var result = new Dictionary<Guid, JsonObject>();
+                while (await channel.BasicGetAsync(queue, autoAck: true, cancellationToken: ct) is { } delivery)
+                {
+                    var envelope = JsonNode.Parse(delivery.Body.Span)!.AsObject();
+                    if (envelope["correlationId"]?.GetValue<Guid>() == correlationId)
+                        result.Add(envelope["messageId"]!.GetValue<Guid>(), envelope);
+                }
+                return result;
+            }
+        }
+        finally
+        {
+            await bus.StopAsync();
+            using var removed = await management.DeleteAsync($"/api/vhosts/{vhost}", CancellationToken.None);
+            if (removed.StatusCode != HttpStatusCode.NotFound)
+                removed.EnsureSuccessStatusCode();
+        }
+
+        Task PublishAsync<T>(T message) where T : class, IVersionedEvent =>
+            bus.Publish(message, publish => context.Apply(publish, message.EventId), ct);
+
+        void AssertEnvelope<T>(Dictionary<Guid, JsonObject> messages, T message) where T : IVersionedEvent
+        {
+            var envelope = messages[message.EventId];
+            Assert.Equal(message.EventId, envelope["message"]!["eventId"]!.GetValue<Guid>());
+            Assert.Equal(correlationId, envelope["message"]!["correlationId"]!.GetValue<Guid>());
+            Assert.Contains($"urn:message:HabitTracker.Contracts:{typeof(T).Name}",
+                envelope["messageType"]!.AsArray().Select(value => value!.GetValue<string>()));
+            Assert.Equal(context.TraceParent, envelope["headers"]!["traceparent"]!.GetValue<string>());
+            Assert.Equal(context.TraceState, envelope["headers"]!["tracestate"]!.GetValue<string>());
+        }
+    }
+
     [RabbitFact]
     public async Task RabbitOutbox_DeliversAfterBrokerRecoveryAndRepeatsWithOriginalIdentity()
     {

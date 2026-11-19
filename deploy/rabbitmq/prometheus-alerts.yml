@@ -1,0 +1,10 @@
+groups:
+  - name: rabbitmq
+    rules:
+      - alert: RabbitMqDeadLetterQueueNotEmpty
+        expr: rabbitmq_detailed_queue_messages{queue=~"(worker-habit-events-v1|notifications-ready-v1)_(error|skipped)"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RabbitMQ queue {{ $labels.queue }} has failed or skipped deliveries"
