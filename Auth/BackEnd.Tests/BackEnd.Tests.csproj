@@ -26,6 +26,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\WebApplication1\WebApplication1.csproj" />
+      <None Include="../../deploy/rabbitmq/definitions.json" Link="rabbitmq-definitions.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
 </Project>

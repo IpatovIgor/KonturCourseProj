@@ -235,10 +235,69 @@ public sealed class ScheduleMessagesTests(WorkerInfrastructureFixture fixture)
             .Find(x => x.Id == message.HabitId).SingleAsync(ct)).Revision);
     }
 
+    [Fact]
+    public async Task PersistentStorageFailureExhaustsRetriesAndCanBeReplayedToWorker()
+    {
+        var message = Habit(2);
+        var inbox = fixture.Database.GetCollection<InboxEvent>("inboxEvents");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var ct = timeout.Token;
+        var writesRejected = 0;
+        var fault = new TaskCompletionSource<Guid?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var errorQueue = fixture.Bus.ConnectReceiveEndpoint(WorkerEndpoint.QueueName + "_error", endpoint =>
+        {
+            endpoint.ConfigureConsumeTopology = false;
+            endpoint.Handler<HabitChangedV1>(context =>
+            {
+                if (context.Message.EventId == message.EventId)
+                    fault.TrySetResult(context.MessageId);
+                return Task.CompletedTask;
+            });
+        });
+        try
+        {
+            await errorQueue.Ready.WaitAsync(ct);
+            await SetValidatorAsync(new BsonDocument("_id", new BsonDocument("$ne", message.HabitId)));
+            fixture.MongoCommandSucceeded += CountRejectedWrites;
+            try
+            {
+                await PublishAsync(message, ct);
+                Assert.Equal(message.EventId, await fault.Task.WaitAsync(ct));
+                Assert.Equal(4, Volatile.Read(ref writesRejected));
+                Assert.False(await inbox.Find(x => x.Id == message.EventId).AnyAsync(ct));
+            }
+            finally
+            {
+                fixture.MongoCommandSucceeded -= CountRejectedWrites;
+                await SetValidatorAsync(new BsonDocument());
+            }
+
+            var worker = await fixture.Bus.GetSendEndpoint(new Uri("queue:" + WorkerEndpoint.QueueName));
+            await worker.Send(message, context => TransportContext(message).Apply(context, message.EventId), ct);
+            await EventuallyAsync(() => inbox.Find(x => x.Id == message.EventId).AnyAsync(ct), ct);
+            Assert.Equal(1, await inbox.CountDocumentsAsync(x => x.Id == message.EventId, cancellationToken: ct));
+        }
+        finally
+        {
+            await errorQueue.StopAsync();
+        }
+
+        Task SetValidatorAsync(BsonDocument validator) => fixture.Database.RunCommandAsync<BsonDocument>(
+            new BsonDocument { { "collMod", "habitSchedules" }, { "validator", validator } });
+
+        void CountRejectedWrites(CommandSucceededEvent command)
+        {
+            if (command.CommandName == "update" && command.Reply.TryGetValue("writeErrors", out var errors) &&
+                errors.AsBsonArray.Any(error => error["code"] == 121))
+                Interlocked.Increment(ref writesRejected);
+        }
+    }
+
     private Task PublishAsync(HabitChangedV1 message, CancellationToken ct) =>
-        fixture.Bus.Publish(message, publish =>
-            new EventContext(message.CorrelationId, "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", "test=1")
-                .Apply(publish, message.EventId), ct);
+        fixture.Bus.Publish(message, publish => TransportContext(message).Apply(publish, message.EventId), ct);
+
+    private static EventContext TransportContext(HabitChangedV1 message) =>
+        new(message.CorrelationId, "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", "test=1");
 
     private static HttpResponseMessage Json<T>(T value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
 

@@ -35,27 +35,24 @@ services:
       RABBITMQ_DEFAULT_VHOST: habit-tracker
     volumes:
       - ./deploy/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./deploy/rabbitmq/bootstrap.sh:/etc/rabbitmq/bootstrap.sh:ro
     ports:
       - "127.0.0.1:5673:5672"
       - "127.0.0.1:15673:15672"
     healthcheck:
-      test:
-        - CMD-SHELL
-        - |
-          bindings=$$(gosu rabbitmq rabbitmqctl -q -p habit-tracker list_bindings source_name destination_name destination_kind) || exit 1
-          if printf '%s\n' "$$bindings" | awk '
-            $$1 == "habit-changed-v1" && $$2 == "worker-habit-events-v1" && $$3 == "exchange" {habit=1}
-            $$1 == "summary-settings-changed-v1" && $$2 == "worker-habit-events-v1" && $$3 == "exchange" {summary=1}
-            $$1 == "notification-ready-v1" && $$2 == "notifications-ready-v1" && $$3 == "exchange" {ready=1}
-            $$1 == "worker-habit-events-v1" && $$2 == "worker-habit-events-v1" && $$3 == "queue" {workerQueue=1}
-            $$1 == "notifications-ready-v1" && $$2 == "notifications-ready-v1" && $$3 == "queue" {notificationsQueue=1}
-            END {exit !(habit && summary && ready && workerQueue && notificationsQueue)}'; then
-            exit 0
-          fi
-          # Import is asynchronous. Wait for the next check to see every binding.
-          gosu rabbitmq rabbitmqctl import_definitions /etc/rabbitmq/definitions.json
-          exit 1
+      test: [CMD, sh, /etc/rabbitmq/bootstrap.sh]
       start_period: 180s
       interval: 10s
       timeout: 30s
       retries: 6
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    profiles: [rabbitmq-monitoring]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:19090:9090"
+    volumes:
+      - ./deploy/rabbitmq/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/rabbitmq/prometheus-alerts.yml:/etc/prometheus/rabbitmq-alerts.yml:ro

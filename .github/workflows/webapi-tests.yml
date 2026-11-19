@@ -4,7 +4,11 @@ on:
   pull_request:
     paths:
       - 'Auth/**'
+      - 'scripts/replay-message/**'
+      - 'habit-frontend/**'
       - 'deploy/rabbitmq/**'
+      - 'deploy/k8s/habit-tracker-ingress.yaml'
+      - 'global.json'
       - 'compose.webapi-tests.yaml'
       - '.github/workflows/webapi-tests.yml'
   workflow_dispatch:
@@ -29,11 +33,35 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: habit-frontend/package-lock.json
       - name: Start MongoDB and RabbitMQ
         run: docker compose -f compose.webapi-tests.yaml up -d --wait --wait-timeout 240
+      - name: Check RabbitMQ bootstrap
+        run: node deploy/rabbitmq/bootstrap.test.mjs
       - name: Run WebAPI tests
-        run: dotnet test WebApplication1.sln -c Release
+        run: dotnet test BackEnd.Tests -c Release
         working-directory: Auth
+      - name: Run Notifications tests
+        run: dotnet test HabitTracker.Notifications.Tests -c Release
+        working-directory: Auth
+      - name: Run Worker tests
+        run: dotnet test HabitTracker.Worker.Tests -c Release
+        working-directory: Auth
+      - name: Build RabbitMQ replay tool
+        run: dotnet build scripts/replay-message -c Release
+      - name: Check RabbitMQ replay routing
+        run: node scripts/replay-message/replay.test.mjs
+      - name: Check React client
+        working-directory: habit-frontend
+        run: |
+          npm ci
+          npm test
+          npm run lint
+          npm run build
       - name: Show dependency logs on failure
         if: failure()
         run: docker compose -f compose.webapi-tests.yaml logs --tail 100

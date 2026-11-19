@@ -4,6 +4,8 @@ import { displayDate, displayDays } from './habitDisplay.js'
 import HabitDetails from './HabitDetails.jsx'
 import HabitForm from './HabitForm.jsx'
 import QueryState from './QueryState.jsx'
+import NotificationPanel from './notifications/NotificationPanel.jsx'
+import SummarySettings from './notifications/SummarySettings.jsx'
 import useQuery from './useQuery.js'
 
 const sections = [
@@ -36,7 +38,7 @@ function lastPage(list) {
   return Math.max(1, Math.ceil(list.totalCount / list.pageSize))
 }
 
-export default function HabitTracker({ api, onLogout }) {
+export default function HabitTracker({ api, onLogout, notifications }) {
   const [section, setSection] = useState('today')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState(null)
@@ -86,6 +88,7 @@ export default function HabitTracker({ api, onLogout }) {
 
   function openHabit(id) {
     clearFeedback()
+    setCreating(false)
     setSelected(id)
   }
 
@@ -100,8 +103,9 @@ export default function HabitTracker({ api, onLogout }) {
     writing.current = true
     setPending(true)
     clearFeedback()
+    let result
     try {
-      await action()
+      result = await action()
     } catch (requestError) {
       setError(errorMessage(requestError))
       return false
@@ -111,7 +115,7 @@ export default function HabitTracker({ api, onLogout }) {
     }
     setNotice(message)
     setRevision((value) => value + 1)
-    onSuccess?.()
+    onSuccess?.(result)
     return true
   }
 
@@ -120,7 +124,8 @@ export default function HabitTracker({ api, onLogout }) {
   }
 
   function createHabit(fields) {
-    return mutate(() => api.create(fields), 'Привычка создана.', () => {
+    return mutate(() => api.create(fields), 'Привычка создана.', (habit) => {
+      setSelected(habit.id)
       setCreating(false)
       setSection('active')
       setPage(1)
@@ -150,6 +155,13 @@ export default function HabitTracker({ api, onLogout }) {
         </div>
         <button type="button" onClick={onLogout}>Выйти</button>
       </header>
+      <div className="notifications">
+        <NotificationPanel {...notifications} onOpenHabit={openHabit} locked={pending} />
+        <details className="panel notification-panel">
+          <summary>Дневная сводка</summary>
+          <SummarySettings api={api.notifications} />
+        </details>
+      </div>
       <div className="toolbar">
         <nav aria-label="Разделы">
           {sections.map(([key, label]) => (

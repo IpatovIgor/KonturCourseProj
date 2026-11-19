@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { displayDate, displayDays, isArchived } from './habitDisplay.js'
 import HabitForm from './HabitForm.jsx'
 import QueryState from './QueryState.jsx'
+import ReminderSettings from './notifications/ReminderSettings.jsx'
 import useQuery from './useQuery.js'
 
 const dayLabels = {
@@ -113,6 +114,7 @@ export default function HabitDetails({ id, api, today, revision, pending, onBack
           </div>
         )}
       </section>
+      <ReminderSettings api={api.notifications} id={id} archived={archived} />
       <section className="panel">
         <h2>Период</h2>
         <QueryState query={today} />
