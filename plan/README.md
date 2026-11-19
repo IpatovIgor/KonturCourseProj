@@ -13,6 +13,7 @@
 | Docker, локальный стенд, k3s | `05-deployment.md` |
 | Логи, метрики, трассировка | `06-observability.md` |
 | CI/CD и общая приёмка | `07-ci-cd-and-acceptance.md` |
+| Временные отключения и уборка после спринта 3 | [08-sprint4-cleanup.md](08-sprint4-cleanup.md) |
 
 Готовый запрос для передачи вместе с двумя файлами:
 
