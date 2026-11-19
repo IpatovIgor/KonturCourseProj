@@ -1,3 +1,5 @@
+using HabitTracker.Messaging;
+using HabitTracker.Worker.Contracts;
 using HabitTracker.Worker.Clients;
 using HabitTracker.Worker.Configuration;
 using HabitTracker.Worker.Data;
@@ -12,7 +14,6 @@ public sealed class ScheduleBootstrapService(
     IMongoDatabase database,
     MongoTransactions transactions,
     ScheduleProjector projector,
-    MongoIndexInitializer indexInitializer,
     BootstrapReadiness readiness,
     IOptions<WorkerOptions> options,
     TimeProvider clock,
@@ -20,29 +21,21 @@ public sealed class ScheduleBootstrapService(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await indexInitializer.InitializeAsync(stoppingToken);
-
         var state = database.GetCollection<BootstrapState>("bootstrapState");
-        var marker = await state.Find(Builders<BootstrapState>.Filter.Eq(x => x.Id, BootstrapState.InitialSchedulesId))
-            .FirstOrDefaultAsync(stoppingToken);
-
-        if (marker is not null && !options.Value.ReloadSchedulesOnStartup)
-        {
-            logger.LogInformation("Bootstrap marker present; skipping reload.");
-            readiness.MarkReady();
-            return;
-        }
-
+        var checkMarker = !options.Value.ReloadSchedulesOnStartup;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // Два обхода: второй ловит изменения, произошедшие между страницами первого.
-                // События, пришедшие во время загрузки, применяются через projector по правилу
-                // "версия строго больше" и не будут затёрты старым снимком.
-                await RunOnceAsync(stoppingToken);
-                await RunOnceAsync(stoppingToken);
+                if (checkMarker && await state.Find(x => x.Id == BootstrapState.InitialSchedulesId).AnyAsync(stoppingToken))
+                {
+                    logger.LogInformation("Bootstrap marker present; skipping reload.");
+                    readiness.MarkReady();
+                    return;
+                }
 
+                checkMarker = false;
+                await RunOnceAsync(stoppingToken);
                 await state.ReplaceOneAsync(
                     Builders<BootstrapState>.Filter.Eq(x => x.Id, BootstrapState.InitialSchedulesId),
                     new BootstrapState
@@ -58,7 +51,7 @@ public sealed class ScheduleBootstrapService(
             }
             catch (WorkerApiUnauthorizedException)
             {
-                logger.LogError("Worker API rejected the key; readiness stays false. Check Worker__SharedKey.");
+                logger.LogError("Worker API rejected the key; readiness stays false. Check WorkerApi__SharedKey.");
                 await Task.Delay(TimeSpan.FromSeconds(options.Value.BootstrapRetrySeconds), clock, stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -86,10 +79,12 @@ public sealed class ScheduleBootstrapService(
             foreach (var snapshot in page.Items)
             {
                 ct.ThrowIfCancellationRequested();
+                ScheduleValidation.Check(snapshot);
+                var context = EventContext.Capture(Guid.NewGuid());
                 await transactions.RunAsync(async session =>
                 {
                     await projector.ApplyHabitAsync(session, habits, snapshot,
-                        Guid.Empty, Guid.Empty, null, now, ct);
+                        null, context.CorrelationId, context.TraceParent, now, ct, context.TraceState);
                     return true;
                 }, ct);
             }
@@ -107,10 +102,12 @@ public sealed class ScheduleBootstrapService(
             foreach (var snapshot in page.Items)
             {
                 ct.ThrowIfCancellationRequested();
+                ScheduleValidation.Check(snapshot);
+                var context = EventContext.Capture(Guid.NewGuid());
                 await transactions.RunAsync(async session =>
                 {
                     await projector.ApplySummaryAsync(session, summaries, snapshot,
-                        Guid.Empty, Guid.Empty, null, now, ct);
+                        null, context.CorrelationId, context.TraceParent, now, ct, context.TraceState);
                     return true;
                 }, ct);
             }

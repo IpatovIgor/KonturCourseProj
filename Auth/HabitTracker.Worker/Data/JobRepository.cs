@@ -7,42 +7,32 @@ public sealed class JobRepository(IMongoDatabase database)
 {
     private readonly IMongoCollection<Job> _jobs = database.GetCollection<Job>("jobs");
 
-    // Создаёт job или обновляет существующий pending. Терминальные и running не трогает.
-    // Возвращает true, если job записан (создан или обновлён pending).
-    public async Task<bool> UpsertPendingAsync(IClientSessionHandle session, Job job, CancellationToken ct)
+    public async Task UpsertPendingAsync(IClientSessionHandle session, Job job, CancellationToken ct)
     {
-        var filter = Builders<Job>.Filter.Eq(x => x.Id, job.Id);
-        var existing = await _jobs.Find(session, filter).FirstOrDefaultAsync(ct);
-
+        var existing = await _jobs.Find(session, item => item.UserId == job.UserId && item.Kind == job.Kind &&
+            item.HabitKey == job.HabitKey && item.LocalDate == job.LocalDate).FirstOrDefaultAsync(ct);
         if (existing is null)
         {
-            try
-            {
-                await _jobs.InsertOneAsync(session, job, cancellationToken: ct);
-            }
-            catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
-            {
-                return false; // кто-то другой создал job за этот день
-            }
-            return true;
+            await _jobs.InsertOneAsync(session, job, cancellationToken: ct);
+            return;
         }
 
-        // Терминальные и running не переоткрываем.
         if (existing.Status != JobStatus.Pending)
-            return false;
+            return;
 
-        // Обновляем pending, не сбрасывая счётчик HTTP-сбоев и не сокращая backoff.
+        var keepDelay = existing.LastErrorCode == "notDueYet"
+            ? existing.ScheduleRevision >= job.ScheduleRevision
+            : existing.HttpFailureCount > 0;
+        var due = keepDelay && existing.DueAtUtc > job.DueAtUtc ? existing.DueAtUtc : job.DueAtUtc;
         var update = Builders<Job>.Update
-            .Set(x => x.DueAtUtc, job.DueAtUtc)
+            .Set(x => x.DueAtUtc, due)
+            .Set(x => x.ScheduleRevision, job.ScheduleRevision)
             .Set(x => x.TimeZoneId, job.TimeZoneId)
+            .Set(x => x.LastCorrelationId, job.LastCorrelationId)
+            .Set(x => x.LastTraceParent, job.LastTraceParent)
+            .Set(x => x.LastTraceState, job.LastTraceState)
             .Set(x => x.LastUpdatedAtUtc, job.LastUpdatedAtUtc);
-
-        // Если у существующего job уже есть более поздняя задержка (backoff), сохраняем её.
-        if (existing.DueAtUtc > job.DueAtUtc && existing.HttpFailureCount > 0)
-            update = Builders<Job>.Update
-                .Set(x => x.LastUpdatedAtUtc, job.LastUpdatedAtUtc);
-
-        await _jobs.UpdateOneAsync(session, filter, update, cancellationToken: ct);
-        return true;
+        await _jobs.UpdateOneAsync(session, x => x.Id == existing.Id && x.Status == JobStatus.Pending,
+            update, cancellationToken: ct);
     }
 }

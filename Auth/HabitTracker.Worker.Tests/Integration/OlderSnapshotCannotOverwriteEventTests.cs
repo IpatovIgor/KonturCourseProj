@@ -5,6 +5,7 @@ using Xunit;
 
 namespace HabitTracker.Worker.Tests.Integration;
 
+[Trait("Category", "Integration")]
 [Collection("worker-infra")]
 public sealed class OlderSnapshotCannotOverwriteEventTests(WorkerInfrastructureFixture fixture)
 {

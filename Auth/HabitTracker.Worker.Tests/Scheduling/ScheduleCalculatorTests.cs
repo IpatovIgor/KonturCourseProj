@@ -15,6 +15,38 @@ public sealed class ScheduleCalculatorTests
     };
 
     [Fact]
+    public void TomorrowScheduleDoesNotReplaceToday()
+    {
+        var now = new DateTimeOffset(2026, 11, 16, 9, 0, 0, TimeSpan.Zero);
+        var habit = new HabitSchedule
+        {
+            Id = "h1", UserId = "u1", Status = "active", StartDate = "2026-11-01",
+            ReminderEnabled = true, ReminderLocalTime = "20:00", TimeZoneId = "UTC",
+            ScheduleVersions =
+            [
+                new() { EffectiveFrom = "2026-11-01", DaysOfWeek = [1] },
+                new() { EffectiveFrom = "2026-11-17", DaysOfWeek = [2] }
+            ]
+        };
+        var calculator = new ScheduleCalculator();
+        Assert.Equal("2026-11-16", calculator.NextHabitDue(habit, now, null)?.LocalDate);
+        Assert.Equal("2026-11-17", calculator.NextHabitDue(habit, now, "2026-11-16")?.LocalDate);
+    }
+
+    [Fact]
+    public void SummaryUsesLocalDayAfterUtcMidnightBoundary()
+    {
+        var now = new DateTimeOffset(2026, 11, 16, 22, 0, 0, TimeSpan.Zero);
+        var schedule = new SummarySchedule
+        {
+            Id = "u1", Enabled = true, LocalTime = "01:00", TimeZoneId = "Asia/Yekaterinburg"
+        };
+        var slot = new ScheduleCalculator().NextSummaryDue(schedule, now, "2026-11-15");
+        Assert.Equal("2026-11-17", slot?.LocalDate);
+        Assert.Equal(new DateTime(2026, 11, 16, 20, 0, 0, DateTimeKind.Utc), slot?.DueAtUtc);
+    }
+
+    [Fact]
     public void DueTimeUsesUserZone()
     {
         var now = new DateTimeOffset(2026, 11, 15, 12, 0, 0, TimeSpan.Zero);

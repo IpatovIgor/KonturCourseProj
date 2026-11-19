@@ -14,7 +14,7 @@ public sealed class ScheduleRepository(IMongoDatabase database)
             Builders<HabitSchedule>.Filter.Ne(x => x.NextDueAtUtc, null),
             Builders<HabitSchedule>.Filter.Lte(x => x.NextDueAtUtc, now));
         return await _habits.Find(filter)
-            .SortBy(x => x.NextDueAtUtc)
+            .SortBy(x => x.NextDueAtUtc).ThenBy(x => x.Id)
             .Limit(limit)
             .ToListAsync(ct);
     }
@@ -25,10 +25,16 @@ public sealed class ScheduleRepository(IMongoDatabase database)
             Builders<SummarySchedule>.Filter.Ne(x => x.NextDueAtUtc, null),
             Builders<SummarySchedule>.Filter.Lte(x => x.NextDueAtUtc, now));
         return await _summaries.Find(filter)
-            .SortBy(x => x.NextDueAtUtc)
+            .SortBy(x => x.NextDueAtUtc).ThenBy(x => x.Id)
             .Limit(limit)
             .ToListAsync(ct);
     }
+
+    public Task<string?> HabitTimeZoneAsync(string id, CancellationToken ct) =>
+        _habits.Find(x => x.Id == id).Project(x => x.TimeZoneId).FirstOrDefaultAsync(ct)!;
+
+    public Task<string?> SummaryTimeZoneAsync(string id, CancellationToken ct) =>
+        _summaries.Find(x => x.Id == id).Project(x => x.TimeZoneId).FirstOrDefaultAsync(ct)!;
 
     // CAS: сдвигаем указатель только если _id, revision и старый nextDueAtUtc не изменились.
     // Возвращает true, если сдвиг прошёл.

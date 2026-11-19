@@ -5,19 +5,28 @@ services:
     ports:
       - "127.0.0.1:27142:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "if (!db.hello().isWritablePrimary) quit(1)"]
+      # Initialize on a fresh test instance, then wait for the primary election.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - mongodb://127.0.0.1:27017/?directConnection=true
+        - --eval
+        - |
+          const hello = db.hello();
+          if (hello.setName === "rs0" && hello.isWritablePrimary) quit(0);
+          if (!hello.setName) {
+            try {
+              rs.status();
+            } catch (error) {
+              if (error.code !== 94) throw error;
+              rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]});
+            }
+          }
+          quit(1);
       interval: 2s
       timeout: 5s
       retries: 30
-  mongo-init:
-    image: mongo:8.0
-    depends_on:
-      mongo:
-        condition: service_started
-    entrypoint: ["mongosh", "--quiet", "mongodb://mongo:27017/?directConnection=true", "--eval"]
-    command:
-      - 'try { rs.status() } catch (e) { if (e.code !== 94) throw e; rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]}) }'
-    restart: on-failure
   rabbitmq:
     image: rabbitmq:4.1-management
     environment:
