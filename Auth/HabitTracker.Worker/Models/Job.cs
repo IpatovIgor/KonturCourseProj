@@ -18,6 +18,7 @@ public static class JobKind
     public const string DailySummary = "dailySummary";
 }
 
+[BsonIgnoreExtraElements]
 public sealed class Job
 {
     [BsonId, BsonGuidRepresentation(GuidRepresentation.Standard)]
@@ -34,6 +35,9 @@ public sealed class Job
 
     [BsonElement("localDate")]
     public required string LocalDate { get; init; }   // YYYY-MM-DD
+
+    [BsonElement("scheduleRevision")]
+    public long ScheduleRevision { get; init; }
 
     [BsonElement("dueAtUtc")]
     public DateTime DueAtUtc { get; init; }
@@ -62,12 +66,15 @@ public sealed class Job
     [BsonElement("lastErrorCode")]
     public string? LastErrorCode { get; set; }
 
-    [BsonElement("lastCorrelationId")]
+    [BsonElement("lastCorrelationId"), BsonGuidRepresentation(GuidRepresentation.Standard)]
     public Guid? LastCorrelationId { get; set; }
+
+    [BsonElement("lastTraceState")]
+    public string? LastTraceState { get; init; }
 
     [BsonElement("lastTraceParent")]
     public string? LastTraceParent { get; set; }
 
-    [BsonElement("lastUpdatedAtUtc")]
+    [BsonElement("lastUpdated")]
     public DateTime LastUpdatedAtUtc { get; set; }
 }

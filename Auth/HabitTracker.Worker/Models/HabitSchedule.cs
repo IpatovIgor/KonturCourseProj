@@ -44,6 +44,9 @@ public sealed class HabitSchedule
     [BsonElement("lastCorrelationId"), BsonGuidRepresentation(GuidRepresentation.Standard)]
     public Guid? LastCorrelationId { get; init; }
 
+    [BsonElement("lastTraceState")]
+    public string? LastTraceState { get; init; }
+
     [BsonElement("lastTraceParent")]
     public string? LastTraceParent { get; init; }
 }

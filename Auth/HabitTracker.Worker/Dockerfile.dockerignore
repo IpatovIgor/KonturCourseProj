@@ -1,0 +1,10 @@
+**
+!Directory.Build.props
+!HabitTracker.Contracts/
+!HabitTracker.Contracts/**
+!HabitTracker.Messaging/
+!HabitTracker.Messaging/**
+!HabitTracker.Worker/
+!HabitTracker.Worker/**
+**/bin/
+**/obj/

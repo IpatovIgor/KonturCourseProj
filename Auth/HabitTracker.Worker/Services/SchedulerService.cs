@@ -1,3 +1,5 @@
+using System.Globalization;
+using HabitTracker.Contracts;
 using HabitTracker.Worker.Configuration;
 using HabitTracker.Worker.Data;
 using HabitTracker.Worker.Models;
@@ -59,9 +61,15 @@ public sealed class SchedulerService(
                 {
                     await transactions.RunAsync(async session =>
                     {
-                        var slot = calculator.NextHabitDue(current, now, afterLocalDate: current.NextLocalDate);
-                        var job = NewJob(current, current.NextLocalDate!, current.NextDueAtUtc!.Value, now);
-                        await jobs.UpsertPendingAsync(session, job, ct);
+                        var dueSlot = CurrentSlot(current.NextLocalDate!, current.NextDueAtUtc!.Value, current.TimeZoneId, now)
+                            ?? calculator.NextHabitDue(current, now, afterLocalDate: null);
+                        var slot = dueSlot;
+                        if (dueSlot is not null && dueSlot.DueAtUtc <= now.UtcDateTime)
+                        {
+                            await jobs.UpsertPendingAsync(session,
+                                NewJob(current, dueSlot.LocalDate, dueSlot.DueAtUtc, now), ct);
+                            slot = calculator.NextHabitDue(current, now, dueSlot.LocalDate);
+                        }
 
                         var advanced = await schedules.TryAdvanceHabitAsync(session, current,
                             slot?.DueAtUtc, slot?.LocalDate, ct);
@@ -97,9 +105,15 @@ public sealed class SchedulerService(
                 {
                     await transactions.RunAsync(async session =>
                     {
-                        var slot = calculator.NextSummaryDue(current, now, afterLocalDate: current.NextLocalDate);
-                        var job = NewSummaryJob(current, current.NextLocalDate!, current.NextDueAtUtc!.Value, now);
-                        await jobs.UpsertPendingAsync(session, job, ct);
+                        var dueSlot = CurrentSlot(current.NextLocalDate!, current.NextDueAtUtc!.Value, current.TimeZoneId, now)
+                            ?? calculator.NextSummaryDue(current, now, afterLocalDate: null);
+                        var slot = dueSlot;
+                        if (dueSlot is not null && dueSlot.DueAtUtc <= now.UtcDateTime)
+                        {
+                            await jobs.UpsertPendingAsync(session,
+                                NewSummaryJob(current, dueSlot.LocalDate, dueSlot.DueAtUtc, now), ct);
+                            slot = calculator.NextSummaryDue(current, now, dueSlot.LocalDate);
+                        }
 
                         var advanced = await schedules.TryAdvanceSummaryAsync(session, current,
                             slot?.DueAtUtc, slot?.LocalDate, ct);
@@ -122,6 +136,10 @@ public sealed class SchedulerService(
         }
     }
 
+    private static DueSlot? CurrentSlot(string localDate, DateTime dueAtUtc, string zone, DateTimeOffset now) =>
+        string.CompareOrdinal(localDate, NotificationCalendar.LocalDate(now, zone)
+            .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)) < 0 ? null : new DueSlot(localDate, dueAtUtc);
+
     private static Job NewJob(HabitSchedule habit, string localDate, DateTime dueAtUtc, DateTimeOffset now) => new()
     {
         Id = Guid.NewGuid(),
@@ -131,6 +149,10 @@ public sealed class SchedulerService(
         LocalDate = localDate,
         DueAtUtc = dueAtUtc,
         TimeZoneId = habit.TimeZoneId,
+        ScheduleRevision = habit.Revision,
+        LastCorrelationId = habit.LastCorrelationId,
+        LastTraceParent = habit.LastTraceParent,
+        LastTraceState = habit.LastTraceState,
         Status = JobStatus.Pending,
         LastUpdatedAtUtc = now.UtcDateTime
     };
@@ -144,6 +166,10 @@ public sealed class SchedulerService(
         LocalDate = localDate,
         DueAtUtc = dueAtUtc,
         TimeZoneId = summary.TimeZoneId,
+        ScheduleRevision = summary.Revision,
+        LastCorrelationId = summary.LastCorrelationId,
+        LastTraceParent = summary.LastTraceParent,
+        LastTraceState = summary.LastTraceState,
         Status = JobStatus.Pending,
         LastUpdatedAtUtc = now.UtcDateTime
     };

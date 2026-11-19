@@ -15,14 +15,14 @@ public sealed class MongoIndexInitializer(
         await habits.Indexes.CreateManyAsync(new[]
         {
             new CreateIndexModel<HabitSchedule>(
-                Builders<HabitSchedule>.IndexKeys.Ascending(x => x.NextDueAtUtc))
+                Builders<HabitSchedule>.IndexKeys.Ascending(x => x.NextDueAtUtc).Ascending(x => x.Id))
         }, ct);
 
         var summaries = database.GetCollection<SummarySchedule>("summarySchedules");
         await summaries.Indexes.CreateManyAsync(new[]
         {
             new CreateIndexModel<SummarySchedule>(
-                Builders<SummarySchedule>.IndexKeys.Ascending(x => x.NextDueAtUtc))
+                Builders<SummarySchedule>.IndexKeys.Ascending(x => x.NextDueAtUtc).Ascending(x => x.Id))
         }, ct);
 
         var jobs = database.GetCollection<Job>("jobs");

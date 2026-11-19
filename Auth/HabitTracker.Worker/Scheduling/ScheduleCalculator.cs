@@ -29,18 +29,23 @@ public sealed class ScheduleCalculator
                 DateTimeStyles.None, out var startDate) && start < startDate)
             start = startDate;
 
-        for (var date = start; date <= today.AddYears(1); date = date.AddDays(1))
+        var versions = snapshot.ScheduleVersions.OrderBy(version => version.EffectiveFrom, StringComparer.Ordinal).ToArray();
+        for (var i = 0; i < versions.Length; i++)
         {
-            if (!IsScheduled(snapshot, date))
-                continue;
-
-            var due = NotificationCalendar.DueAtUtc(date, time, snapshot.TimeZoneId);
-
-            // Сегодняшний срок в прошлом — всё равно возвращаем (догоняющее уведомление за сегодня).
-            if (date == today && due < now)
-                return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), due.UtcDateTime);
-            if (due >= now)
-                return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), due.UtcDateTime);
+            var version = versions[i];
+            var effective = DateOnly.ParseExact(version.EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var first = start > effective ? start : effective;
+            var last = i + 1 < versions.Length
+                ? DateOnly.ParseExact(versions[i + 1].EffectiveFrom, "yyyy-MM-dd", CultureInfo.InvariantCulture).DayNumber - 1
+                : DateOnly.MaxValue.DayNumber;
+            for (var n = first.DayNumber; n <= Math.Min(last, first.DayNumber + 6); n++)
+            {
+                var date = DateOnly.FromDayNumber(n);
+                var day = ((int)date.DayOfWeek + 6) % 7 + 1;
+                if (version.DaysOfWeek.Contains(day))
+                    return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        NotificationCalendar.DueAtUtc(date, time, snapshot.TimeZoneId).UtcDateTime);
+            }
         }
 
         return null;
@@ -63,46 +68,7 @@ public sealed class ScheduleCalculator
                 start = after.AddDays(1);
         }
 
-        var date = start;
-        var due = NotificationCalendar.DueAtUtc(date, time, snapshot.TimeZoneId);
-
-        // Если сегодняшний срок уже прошёл — это догоняющее уведомление за сегодня.
-        if (date == today && due < now)
-            return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), due.UtcDateTime);
-
-        if (due >= now)
-            return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), due.UtcDateTime);
-
-        // Будущий день.
-        date = today.AddDays(1);
-        due = NotificationCalendar.DueAtUtc(date, time, snapshot.TimeZoneId);
-        return new DueSlot(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), due.UtcDateTime);
-    }
-
-    // Точно как BackEnd.Services.HabitService.IsScheduled / ScheduleOn:
-    // DaysOfWeek в контракте: Monday=1 ... Sunday=7.
-    private static bool IsScheduled(HabitSchedule snapshot, DateOnly date)
-    {
-        var text = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        if (string.CompareOrdinal(text, snapshot.StartDate) < 0)
-            return false;
-        var version = ScheduleOn(snapshot, text);
-        if (version is null)
-            return false;
-        var day = ((int)date.DayOfWeek + 6) % 7 + 1;   // Monday=1 ... Sunday=7
-        return version.DaysOfWeek.Contains(day);
-    }
-
-    // FindLast(EffectiveFrom <= date), как в WebAPI.
-    private static ScheduleVersion? ScheduleOn(HabitSchedule snapshot, string text)
-    {
-        ScheduleVersion? selected = null;
-        foreach (var version in snapshot.ScheduleVersions)
-        {
-            if (string.CompareOrdinal(version.EffectiveFrom, text) <= 0
-                && (selected is null || string.CompareOrdinal(version.EffectiveFrom, selected.EffectiveFrom) >= 0))
-                selected = version;
-        }
-        return selected;
+        return new DueSlot(start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            NotificationCalendar.DueAtUtc(start, time, snapshot.TimeZoneId).UtcDateTime);
     }
 }

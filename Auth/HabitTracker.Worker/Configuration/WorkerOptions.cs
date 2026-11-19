@@ -2,7 +2,7 @@ namespace HabitTracker.Worker.Configuration;
 
 public sealed class WorkerOptions
 {
-    public string BaseUrl { get; set; } = "http://localhost:5000";
+    public string BaseUrl { get; set; } = "http://localhost:5160";
     public string SharedKey { get; set; } = "";
     
     public const string SectionName = "Worker";
@@ -17,9 +17,13 @@ public sealed class WorkerOptions
 
     public void Validate()
     {
-        if (string.IsNullOrWhiteSpace(BaseUrl)) throw new ArgumentException("WorkerApi BaseUrl is required", nameof(BaseUrl));
+        if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https") ||
+            string.IsNullOrEmpty(url.Host) || url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0)
+            throw new ArgumentException("Configure a valid WorkerApi__BaseUrl.");
+        if (string.IsNullOrWhiteSpace(SharedKey) || SharedKey.Any(c => c < 32 || c == 127))
+            throw new ArgumentException("Configure WorkerApi__SharedKey.");
         if (PollIntervalSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(PollIntervalSeconds));
-        if (BatchSize <= 0) throw new ArgumentOutOfRangeException(nameof(BatchSize));
+        if (BatchSize is < 1 or > 200) throw new ArgumentOutOfRangeException(nameof(BatchSize));
         if (LeaseSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(LeaseSeconds));
         if (LeaseRenewalSeconds <= 0 || LeaseRenewalSeconds >= LeaseSeconds)
             throw new ArgumentOutOfRangeException(nameof(LeaseRenewalSeconds), "must be > 0 and < LeaseSeconds");

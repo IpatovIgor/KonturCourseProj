@@ -1,3 +1,4 @@
+using System.Globalization;
 using HabitTracker.Contracts;
 using HabitTracker.Messaging;
 using HabitTracker.Worker.Clients;
@@ -13,32 +14,27 @@ public sealed class JobExecutorService(
     MongoOutbox outbox,
     MongoTransactions transactions,
     WorkerApiClient api,
+    ScheduleRepository schedules,
     BootstrapReadiness readiness,
     IOptions<WorkerOptions> options,
     TimeProvider clock,
     ILogger<JobExecutorService> logger) : BackgroundService
 {
-    private readonly string _owner = JobLease.NewOwner();
-
-    internal string Owner => _owner;
+    internal string Owner { get; } = JobLease.NewOwner();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await readiness.WaitReadyAsync(stoppingToken);
-
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var job = await jobs.ClaimAsync(_owner, clock.GetUtcNow().UtcDateTime,
+                var job = await jobs.ClaimAsync(Owner, clock.GetUtcNow().UtcDateTime,
                     TimeSpan.FromSeconds(options.Value.LeaseSeconds), stoppingToken);
                 if (job is null)
-                {
                     await Task.Delay(TimeSpan.FromSeconds(options.Value.PollIntervalSeconds), clock, stoppingToken);
-                    continue;
-                }
-
-                await ExecuteOneAsync(job, stoppingToken);
+                else
+                    await ExecuteOneAsync(job, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -52,214 +48,206 @@ public sealed class JobExecutorService(
         }
     }
 
-    private async Task ExecuteOneAsync(Job job, CancellationToken stoppingToken)
+    internal async Task ExecuteOneAsync(Job job, CancellationToken stoppingToken)
     {
-        using var leaseCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        var renewal = RenewLeaseAsync(job, leaseCts);
-
+        using var lease = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var renewal = RenewLeaseAsync(job, lease);
+        var started = clock.GetTimestamp();
         try
         {
-            if (await IsStaleLocalDateAsync(job, stoppingToken))
-            {
-                await SkipAsync(job, "stale_local_date", stoppingToken);
-                return;
-            }
-
-            if (job.Kind == JobKind.HabitReminder)
-                await ExecuteReminderAsync(job, stoppingToken);
-            else
-                await ExecuteSummaryAsync(job, stoppingToken);
+            await ExecuteOwnedAsync(job, lease.Token);
         }
         catch (LeaseLostException)
         {
             logger.LogWarning("Job {JobId} lost lease", job.Id);
         }
-        catch (OperationCanceledException) when (leaseCts.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (lease.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
-            logger.LogWarning("Job {JobId} lost lease during execution", job.Id);
+            logger.LogWarning("Job {JobId} cancelled after loss of lease", job.Id);
         }
         finally
         {
-            leaseCts.Cancel();
+            await lease.CancelAsync();
             await renewal;
+            logger.LogDebug("Job {JobId} ({Kind}), correlation {CorrelationId}, took {ElapsedMs} ms",
+                job.Id, job.Kind, job.LastCorrelationId, clock.GetElapsedTime(started).TotalMilliseconds);
         }
     }
 
-    private async Task RenewLeaseAsync(Job job, CancellationTokenSource leaseCts)
+    private async Task RenewLeaseAsync(Job job, CancellationTokenSource lease)
     {
         var interval = TimeSpan.FromSeconds(options.Value.LeaseRenewalSeconds);
-        var lease = TimeSpan.FromSeconds(options.Value.LeaseSeconds);
-        while (!leaseCts.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(interval, clock, leaseCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            var ok = await jobs.RenewLeaseAsync(job.Id, _owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, lease, leaseCts.Token);
-            if (!ok)
-            {
-                leaseCts.Cancel();
-                return;
-            }
-        }
-    }
-
-    private Task<bool> IsStaleLocalDateAsync(Job job, CancellationToken ct)
-    {
-        var today = NotificationCalendar.LocalDate(clock.GetUtcNow(), job.TimeZoneId).ToString("yyyy-MM-dd");
-        return Task.FromResult(today != job.LocalDate);
-    }
-
-    private async Task ExecuteReminderAsync(Job job, CancellationToken ct)
-    {
+        var duration = TimeSpan.FromSeconds(options.Value.LeaseSeconds);
         try
         {
-            var result = await api.ReminderAsync(job.UserId, job.HabitKey, job.LocalDate, ct);
-            if (result.Eligible)
+            while (!lease.IsCancellationRequested)
             {
-                if (await IsStaleLocalDateAsync(job, ct))
-                {
-                    await SkipAsync(job, "stale_local_date", ct);
-                    return;
-                }
+                await Task.Delay(interval, clock, lease.Token);
+                if (await jobs.RenewLeaseAsync(job.Id, Owner, job.LeaseVersion, clock.GetUtcNow().UtcDateTime,
+                    duration, lease.Token))
+                    continue;
 
-                await CompleteAsync(job, new NotificationReadyV1(
-                    Guid.NewGuid(), clock.GetUtcNow().UtcDateTime, Correlation(job),
-                    job.Id, job.UserId, JobKind.HabitReminder, job.LocalDate,
-                    clock.GetUtcNow().UtcDateTime, HabitId: job.HabitKey, HabitName: result.HabitName), ct);
+                await lease.CancelAsync();
                 return;
             }
-
-            if (result.Reason == "notDueYet" && result.NextDueAtUtc is { } next)
-            {
-                await RescheduleAsync(job, next.UtcDateTime, httpFailureCount: null, "notDueYet", ct);
-                return;
-            }
-
-            await SkipAsync(job, "ineligible", ct);
         }
-        catch (WorkerApiTransientException ex)
+        catch (OperationCanceledException) when (lease.IsCancellationRequested) { }
+        catch (Exception ex)
         {
-            await HandleTransientAsync(job, ex.Message, ct);
-        }
-        catch (WorkerApiNotFoundException)
-        {
-            await SkipAsync(job, "not_found", ct);
-        }
-        catch (WorkerApiUnauthorizedException)
-        {
-            logger.LogError("Worker API rejected key during job {JobId}", job.Id);
-            await FailAsync(job, "unauthorized", ct);
-        }
-        catch (WorkerApiContractException ex)
-        {
-            await FailAsync(job, $"contract:{ex.Message}", ct);
+            logger.LogWarning(ex, "Could not renew lease for job {JobId}", job.Id);
+            await lease.CancelAsync();
         }
     }
 
-    private async Task ExecuteSummaryAsync(Job job, CancellationToken ct)
+    private async Task ExecuteOwnedAsync(Job job, CancellationToken ct)
     {
-        try
+        var zone = await GetTimeZoneAsync(job, ct);
+        var requestStarted = clock.GetUtcNow();
+        if (!IsJobDate(job, zone, requestStarted))
         {
-            var result = await api.SummaryAsync(job.UserId, job.LocalDate, ct);
-            if (result.Eligible)
-            {
-                if (await IsStaleLocalDateAsync(job, ct))
-                {
-                    await SkipAsync(job, "stale_local_date", ct);
-                    return;
-                }
-
-                await CompleteAsync(job, new NotificationReadyV1(
-                    Guid.NewGuid(), clock.GetUtcNow().UtcDateTime, Correlation(job),
-                    job.Id, job.UserId, JobKind.DailySummary, job.LocalDate,
-                    clock.GetUtcNow().UtcDateTime, Planned: result.Planned, Completed: result.Completed, Pending: result.Pending), ct);
-                return;
-            }
-
-            if (result.Reason == "notDueYet" && result.NextDueAtUtc is { } next)
-            {
-                await RescheduleAsync(job, next.UtcDateTime, httpFailureCount: null, "notDueYet", ct);
-                return;
-            }
-
-            await SkipAsync(job, "ineligible", ct);
-        }
-        catch (WorkerApiTransientException ex)
-        {
-            await HandleTransientAsync(job, ex.Message, ct);
-        }
-        catch (WorkerApiNotFoundException)
-        {
-            await SkipAsync(job, "not_found", ct);
-        }
-        catch (WorkerApiUnauthorizedException)
-        {
-            logger.LogError("Worker API rejected key during job {JobId}", job.Id);
-            await FailAsync(job, "unauthorized", ct);
-        }
-        catch (WorkerApiContractException ex)
-        {
-            await FailAsync(job, $"contract:{ex.Message}", ct);
-        }
-    }
-
-    private async Task HandleTransientAsync(Job job, string error, CancellationToken ct)
-    {
-        var failures = job.HttpFailureCount + 1;
-        if (failures >= JobLease.MaxTransientHttpFailures)
-        {
-            await FailAsync(job, error, ct);
+            await FinishAsync(job, JobStatus.Skipped, "stale_local_date", ct);
             return;
         }
 
-        var next = clock.GetUtcNow() + JobLease.Backoff(failures);
-        await RescheduleAsync(job, next.UtcDateTime, failures, error, ct);
+        Eligibility result;
+        try
+        {
+            result = await ReadEligibilityAsync(job, ct);
+        }
+        catch (WorkerApiNotFoundException)
+        {
+            await FinishAsync(job, JobStatus.Skipped, "not_found", ct);
+            return;
+        }
+        catch (WorkerApiUnauthorizedException)
+        {
+            logger.LogError("Worker API rejected the configured key for job {JobId}", job.Id);
+            await FinishAsync(job, JobStatus.Failed, "unauthorized", ct);
+            return;
+        }
+        catch (WorkerApiContractException ex)
+        {
+            await FinishAsync(job, JobStatus.Failed, ex.Message, ct);
+            return;
+        }
+        catch (WorkerApiTransientException ex)
+        {
+            zone = await GetTimeZoneAsync(job, ct);
+            var now = clock.GetUtcNow();
+            var failures = job.HttpFailureCount + 1;
+            if (!IsJobDate(job, zone, now))
+                await FinishAsync(job, JobStatus.Skipped, "stale_local_date", ct, failures);
+            else if (failures >= JobLease.MaxTransientHttpFailures)
+                await FinishAsync(job, JobStatus.Failed, ex.Message, ct, failures);
+            else
+                await RetryAsync(job, zone, now + JobLease.Backoff(failures), ex.Message, ct, failures);
+            return;
+        }
+
+        zone = await GetTimeZoneAsync(job, ct);
+        var checkedAt = clock.GetUtcNow();
+        if (!IsJobDate(job, zone, checkedAt))
+            await FinishAsync(job, JobStatus.Skipped, "stale_local_date", ct);
+        else if (result.Notification is not null)
+            await CompleteAsync(job, result.Notification, ct, result.Revision, zone);
+        else if (result.NextDueAt is { } next)
+        {
+            if (next <= requestStarted)
+                await FinishAsync(job, JobStatus.Failed, "invalid_next_due", ct);
+            else
+                await RetryAsync(job, zone, next, "notDueYet", ct, revision: result.Revision);
+        }
+        else
+            await FinishAsync(job, JobStatus.Skipped, "ineligible", ct, revision: result.Revision);
     }
 
-    internal Task CompleteAsync(Job job, NotificationReadyV1 notification, CancellationToken ct) =>
-        transactions.RunAsync(async session =>
+    private async Task<Eligibility> ReadEligibilityAsync(Job job, CancellationToken ct)
+    {
+        if (job.Kind == JobKind.HabitReminder)
         {
-            var finished = await jobs.FinishAsync(session, job.Id, _owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, JobStatus.Completed, null, ct);
+            var answer = await api.ReminderAsync(job.UserId, job.HabitKey, job.LocalDate, ct);
+            var now = clock.GetUtcNow().UtcDateTime;
+            return new(answer.Revision, answer.NextDueAtUtc, answer.Eligible
+                ? new NotificationReadyV1(Guid.NewGuid(), now, Correlation(job), job.Id, job.UserId,
+                    job.Kind, job.LocalDate, now, HabitId: job.HabitKey, HabitName: answer.HabitName)
+                : null);
+        }
+
+        var summary = await api.SummaryAsync(job.UserId, job.LocalDate, ct);
+        var created = clock.GetUtcNow().UtcDateTime;
+        return new(summary.Revision, summary.NextDueAtUtc, summary.Eligible
+            ? new NotificationReadyV1(Guid.NewGuid(), created, Correlation(job), job.Id, job.UserId,
+                job.Kind, job.LocalDate, created, Planned: summary.Planned, Completed: summary.Completed, Pending: summary.Pending)
+            : null);
+    }
+
+    private async Task<string> GetTimeZoneAsync(Job job, CancellationToken ct) =>
+        (job.Kind == JobKind.HabitReminder
+            ? await schedules.HabitTimeZoneAsync(job.HabitKey, ct)
+            : await schedules.SummaryTimeZoneAsync(job.UserId, ct)) ?? job.TimeZoneId;
+
+    private static bool IsJobDate(Job job, string zone, DateTimeOffset time) =>
+        NotificationCalendar.LocalDate(time, zone).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) == job.LocalDate;
+
+    private Task RetryAsync(Job job, string zone, DateTimeOffset due, string reason, CancellationToken ct,
+        int? failures = null, long? revision = null) =>
+        IsJobDate(job, zone, due) && IsJobDate(job, zone, clock.GetUtcNow())
+            ? RescheduleAsync(job, due.UtcDateTime, failures, reason, ct, revision)
+            : FinishAsync(job, JobStatus.Skipped, "stale_local_date", ct, failures, revision);
+
+    internal async Task CompleteAsync(Job job, NotificationReadyV1 notification, CancellationToken ct,
+        long? revision = null, string? zone = null)
+    {
+        var status = await transactions.RunAsync(async session =>
+        {
+            var now = clock.GetUtcNow();
+            var currentStatus = zone is null || IsJobDate(job, zone, now) ? JobStatus.Completed : JobStatus.Skipped;
+            var finished = await jobs.FinishAsync(session, job.Id, Owner, job.LeaseVersion, now.UtcDateTime,
+                currentStatus, currentStatus == JobStatus.Skipped ? "stale_local_date" : null, ct, revision: revision);
             if (!finished)
                 throw new LeaseLostException();
 
-            await outbox.InsertAsync(session, notification, EventContext.Capture(notification.CorrelationId), ct);
-            return true;
+            if (currentStatus == JobStatus.Completed)
+                await outbox.InsertAsync(session, notification,
+                    new EventContext(notification.CorrelationId, job.LastTraceParent, job.LastTraceState), ct);
+            return currentStatus;
         }, ct);
+        LogTransition(job, status);
+    }
 
-    internal Task SkipAsync(Job job, string reason, CancellationToken ct) =>
-        transactions.RunAsync(async session =>
+    private async Task FinishAsync(Job job, string status, string reason, CancellationToken ct,
+        int? failures = null, long? revision = null)
+    {
+        await transactions.RunAsync(async session =>
         {
-            var finished = await jobs.FinishAsync(session, job.Id, _owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, JobStatus.Skipped, reason, ct);
-            if (!finished) throw new LeaseLostException();
+            var finished = await jobs.FinishAsync(session, job.Id, Owner, job.LeaseVersion,
+                clock.GetUtcNow().UtcDateTime, status, reason, ct, failures, revision);
+            if (!finished)
+                throw new LeaseLostException();
             return true;
         }, ct);
+        LogTransition(job, status);
+    }
 
-    private Task FailAsync(Job job, string reason, CancellationToken ct) =>
-        transactions.RunAsync(async session =>
+    private async Task RescheduleAsync(Job job, DateTime due, int? failures, string reason, CancellationToken ct, long? revision)
+    {
+        await transactions.RunAsync(async session =>
         {
-            var finished = await jobs.FinishAsync(session, job.Id, _owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, JobStatus.Failed, reason, ct);
-            if (!finished) throw new LeaseLostException();
+            var updated = await jobs.RescheduleAsync(session, job.Id, Owner, job.LeaseVersion,
+                clock.GetUtcNow().UtcDateTime, due, failures, reason, ct, revision);
+            if (!updated)
+                throw new LeaseLostException();
             return true;
         }, ct);
+        LogTransition(job, JobStatus.Pending);
+    }
 
-    internal Task RescheduleAsync(Job job, DateTime nextDueAtUtc, int? httpFailureCount, string reason, CancellationToken ct) =>
-        transactions.RunAsync(async session =>
-        {
-            var ok = await jobs.RescheduleAsync(session, job.Id, _owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, nextDueAtUtc, httpFailureCount, reason, ct);
-            if (!ok) throw new LeaseLostException();
-            return true;
-        }, ct);
+    private void LogTransition(Job job, string status) =>
+        logger.LogInformation("Job {JobId} ({Kind}), correlation {CorrelationId}, transitioned to {Status}",
+            job.Id, job.Kind, job.LastCorrelationId, status);
 
-    private static Guid Correlation(Job job) => job.LastCorrelationId ?? Guid.NewGuid();
+    private static Guid Correlation(Job job) =>
+        job.LastCorrelationId is { } id && id != Guid.Empty ? id : Guid.NewGuid();
+
+    private sealed record Eligibility(long Revision, DateTimeOffset? NextDueAt, NotificationReadyV1? Notification);
 }
