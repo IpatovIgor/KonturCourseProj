@@ -2,9 +2,12 @@
 [Bb]in/
 [Oo]bj/
 [Tt]est[Rr]esults/
+*.trx
+coverage.cobertura.xml
 
 # Local Visual Studio and Rider settings
 .vs/
+.idea/
 *.user
 *.suo
 *.rsuser
