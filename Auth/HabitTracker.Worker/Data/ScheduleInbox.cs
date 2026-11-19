@@ -17,7 +17,8 @@ public sealed class ScheduleInbox(
         var snapshot = new HabitScheduleSnapshot(message.UserId, message.HabitId, message.Revision, message.Status,
             message.StartDate, message.ScheduleVersions?.Select(v => v is null ? null! :
                 new ScheduleVersionSnapshot(v.EffectiveFrom, v.DaysOfWeek)).ToArray()!, message.TimeZoneId,
-            message.ReminderEnabled, message.ReminderLocalTime);
+            message.ReminderEnabled, message.ReminderLocalTime)
+        { ReminderFirstEligibleDate = message.ReminderFirstEligibleDate };
         ScheduleValidation.Check(snapshot);
         return ConsumeAsync(message, (session, now) => projector.ApplyHabitAsync(session,
             database.GetCollection<HabitSchedule>("habitSchedules"), snapshot, message.EventId,

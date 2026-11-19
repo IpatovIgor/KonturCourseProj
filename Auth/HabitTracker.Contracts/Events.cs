@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace HabitTracker.Contracts;
 
 public interface IVersionedEvent
@@ -12,7 +14,11 @@ public sealed record ScheduleVersionV1(string EffectiveFrom, int[] DaysOfWeek);
 public sealed record HabitChangedV1(
     Guid EventId, DateTime OccurredAtUtc, Guid CorrelationId, string UserId, string HabitId, long Revision,
     string Change, string Status, string StartDate, ScheduleVersionV1[] ScheduleVersions,
-    string TimeZoneId, bool ReminderEnabled, string ReminderLocalTime) : IVersionedEvent;
+    string TimeZoneId, bool ReminderEnabled, string ReminderLocalTime) : IVersionedEvent
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReminderFirstEligibleDate { get; init; }
+}
 
 public sealed record SummarySettingsChangedV1(
     Guid EventId, DateTime OccurredAtUtc, Guid CorrelationId, string UserId, long Revision, bool Enabled,

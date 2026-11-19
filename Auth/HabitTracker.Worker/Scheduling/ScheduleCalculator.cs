@@ -29,6 +29,13 @@ public sealed class ScheduleCalculator
                 DateTimeStyles.None, out var startDate) && start < startDate)
             start = startDate;
 
+        if (snapshot.ReminderFirstEligibleDate is { } firstEligibleDate)
+        {
+            var firstDate = DateOnly.ParseExact(firstEligibleDate, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            if (start < firstDate)
+                start = firstDate;
+        }
+
         var versions = snapshot.ScheduleVersions.OrderBy(version => version.EffectiveFrom, StringComparer.Ordinal).ToArray();
         for (var i = 0; i < versions.Length; i++)
         {

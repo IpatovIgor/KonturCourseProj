@@ -57,11 +57,10 @@ export default function HabitTracker({ api, onLogout, notifications }) {
     return page > last ? api.list(section, last, signal) : list
   }, [api, section, page])
   const list = useQuery(section === 'today' ? null : loadPage, scheduleRevision)
-  const { reload: reloadToday } = today
 
   useEffect(() => {
     function refreshWhenVisible() {
-      if (!document.hidden) reloadToday()
+      if (!document.hidden) setRevision((value) => value + 1)
     }
     window.addEventListener('focus', refreshWhenVisible)
     document.addEventListener('visibilitychange', refreshWhenVisible)
@@ -71,7 +70,7 @@ export default function HabitTracker({ api, onLogout, notifications }) {
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       window.clearInterval(timer)
     }
-  }, [reloadToday])
+  }, [])
 
   function clearFeedback() {
     setError('')
@@ -157,10 +156,7 @@ export default function HabitTracker({ api, onLogout, notifications }) {
       </header>
       <div className="notifications">
         <NotificationPanel {...notifications} onOpenHabit={openHabit} locked={pending} />
-        <details className="panel notification-panel">
-          <summary>Дневная сводка</summary>
-          <SummarySettings api={api.notifications} />
-        </details>
+        <SummarySettings api={api.notifications} />
       </div>
       <div className="toolbar">
         <nav aria-label="Разделы">

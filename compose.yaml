@@ -1,0 +1,130 @@
+name: habit-tracker
+
+x-app-environment: &app-environment
+  MongoDbSettings__ConnectionString: mongodb://mongo:27017/?replicaSet=rs0
+  RabbitMq__Host: rabbitmq
+  RabbitMq__VirtualHost: habit-tracker
+  RabbitMq__Username: habit-tracker
+  RabbitMq__Password: ${HABIT_TRACKER_RABBIT_PASSWORD:?Set HABIT_TRACKER_RABBIT_PASSWORD in .env}
+  Features__DailySummaryEnabled: ${HABIT_TRACKER_DAILY_SUMMARY_ENABLED:-false}
+
+x-backend-healthcheck: &backend-healthcheck
+  test:
+    - CMD
+    - bash
+    - -ec
+    - |
+      exec 3<>/dev/tcp/127.0.0.1/80
+      printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+      read -r -t 3 status <&3
+      [[ "$$status" == 'HTTP/1.1 200 '* ]]
+  interval: 5s
+  timeout: 4s
+  retries: 12
+  start_period: 15s
+
+services:
+  mongo:
+    image: mongo:8.0
+    command: [mongod, --replSet, rs0, --bind_ip_all]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - mongodb://127.0.0.1:27017/?directConnection=true
+        - --eval
+        - |
+          const hello = db.hello();
+          if (hello.setName === 'rs0' && hello.isWritablePrimary) quit(0);
+          if (!hello.setName) {
+            try { rs.status(); }
+            catch (error) {
+              if (error.code !== 94) throw error;
+              rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]});
+            }
+          }
+          quit(1);
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: habit-tracker
+      RABBITMQ_DEFAULT_PASS: ${HABIT_TRACKER_RABBIT_PASSWORD:?Set HABIT_TRACKER_RABBIT_PASSWORD in .env}
+      RABBITMQ_DEFAULT_VHOST: habit-tracker
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./deploy/rabbitmq/bootstrap.sh:/etc/rabbitmq/bootstrap.sh:ro
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/5672
+          if [ ! -f /tmp/habit-tracker-topology-ready ]; then
+            sh /etc/rabbitmq/bootstrap.sh
+            touch /tmp/habit-tracker-topology-ready
+          fi
+      start_period: 180s
+      interval: 10s
+      timeout: 90s
+      retries: 8
+  webapi:
+    build:
+      context: ./Auth
+      dockerfile: WebApplication1/Dockerfile
+    environment:
+      <<: *app-environment
+      MongoDbSettings__DatabaseName: habit_tracker_auth
+      JwtSettings__Secret: ${HABIT_TRACKER_JWT_SECRET:?Set HABIT_TRACKER_JWT_SECRET in .env}
+      WorkerApi__SharedKey: ${HABIT_TRACKER_WORKER_KEY:?Set HABIT_TRACKER_WORKER_KEY in .env}
+      Http__UseHttpsRedirection: 'false'
+    depends_on:
+      mongo: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck: *backend-healthcheck
+  worker:
+    build:
+      context: ./Auth
+      dockerfile: HabitTracker.Worker/Dockerfile
+    environment:
+      <<: *app-environment
+      MongoDbSettings__DatabaseName: habit_tracker_worker
+      WorkerApi__BaseUrl: http://webapi
+      WorkerApi__SharedKey: ${HABIT_TRACKER_WORKER_KEY:?Set HABIT_TRACKER_WORKER_KEY in .env}
+      Worker__PollIntervalSeconds: '5'
+    depends_on:
+      webapi: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck: *backend-healthcheck
+  notifications:
+    build:
+      context: .
+      dockerfile: Auth/HabitTracker.Notifications/Dockerfile
+    environment:
+      <<: *app-environment
+      MongoDbSettings__DatabaseName: habit_tracker_notifications
+      JwtSettings__Secret: ${HABIT_TRACKER_JWT_SECRET:?Set HABIT_TRACKER_JWT_SECRET in .env}
+    depends_on:
+      mongo: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    healthcheck: *backend-healthcheck
+  frontend:
+    build: ./habit-frontend
+    ports:
+      - '127.0.0.1:8080:80'
+    depends_on:
+      webapi: {condition: service_healthy}
+      worker: {condition: service_healthy}
+      notifications: {condition: service_healthy}
+
+volumes:
+  mongo-data:
+  rabbit-data:

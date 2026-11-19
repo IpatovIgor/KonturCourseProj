@@ -132,13 +132,13 @@ export default function HabitDetails({ id, api, today, revision, pending, onBack
       </section>
       <section className="panel">
         <h2>Статистика</h2>
-        <QueryState query={statistics} />
-        {statistics.data && <Statistics data={statistics.data} />}
+        <QueryState query={statistics} showRefresh />
+        {!statistics.loading && !statistics.error && statistics.data && <Statistics data={statistics.data} />}
       </section>
       <section className="panel">
         <h2>История</h2>
-        <QueryState query={history} />
-        {history.data && (
+        <QueryState query={history} showRefresh />
+        {!history.loading && !history.error && history.data && (
           history.data.days.length === 0 ? <p className="muted">За этот период записей нет.</p> : (
             <ul className="habit-list">
               {history.data.days.map(({ date, status }) => (

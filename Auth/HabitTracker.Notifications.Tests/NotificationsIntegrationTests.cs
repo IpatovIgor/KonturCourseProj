@@ -35,6 +35,22 @@ public sealed class NotificationsIntegrationTests
     private static readonly DateTime Created = new(2026, 11, 15, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public async Task DisabledSummary_DropsQueuedSummaryButStillDeliversReminder()
+    {
+        await using var server = await StartAsync(dailySummaryEnabled: false);
+        using var owner = server.Client(Token(Owner));
+        var reminderId = Guid.NewGuid();
+        await server.PublishAsync(Ready(Guid.NewGuid()));
+        await server.PublishAsync(Ready(reminderId) with
+        {
+            Kind = "habitReminder", HabitId = "507f1f77bcf86cd799439013", HabitName = "Reading",
+            Planned = null, Completed = null, Pending = null
+        });
+        await WaitUntilAsync(async () => (await History(owner)).Items.Any(item => item.Id == reminderId.ToString()));
+        Assert.Equal(reminderId.ToString(), Assert.Single((await History(owner)).Items).Id);
+    }
+
+    [Fact]
     public async Task HistoryPaginatesByTimeAndIdAndReadIsOwnerScopedAndIdempotent()
     {
         await using var server = await StartAsync();
@@ -289,7 +305,7 @@ public sealed class NotificationsIntegrationTests
     }
 
     private static async Task<TestServer> StartAsync(Action<IServiceCollection>? configure = null,
-        string? databaseName = null, string? unavailableMongo = null)
+        string? databaseName = null, string? unavailableMongo = null, bool dailySummaryEnabled = true)
     {
         var settings = RabbitSettings();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -303,7 +319,8 @@ public sealed class NotificationsIntegrationTests
             ["MongoDbSettings:DatabaseName"] = databaseName ?? "notifications_tests_" + Guid.NewGuid().ToString("N"),
             ["RabbitMq:Host"] = settings.Host, ["RabbitMq:Username"] = settings.Username,
             ["RabbitMq:Password"] = settings.Password, ["RabbitMq:VirtualHost"] = settings.VirtualHost,
-            ["JwtSettings:Secret"] = Key, ["JwtSettings:Issuer"] = Issuer, ["JwtSettings:Audience"] = Audience
+            ["JwtSettings:Secret"] = Key, ["JwtSettings:Issuer"] = Issuer, ["JwtSettings:Audience"] = Audience,
+            ["Features:DailySummaryEnabled"] = dailySummaryEnabled.ToString()
         });
         configure?.Invoke(builder.Services);
         var app = NotificationsApplication.Build(builder);

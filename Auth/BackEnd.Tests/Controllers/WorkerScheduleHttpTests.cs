@@ -11,6 +11,70 @@ namespace BackEnd.Tests.Controllers;
 public sealed partial class HabitsHttpTests
 {
     [MongoFact]
+    public async Task CreateWithPastReminder_PersistsSettingAndStartsOnNextScheduledDay()
+    {
+        using var app = new HabitsApplication();
+        using var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Worker-Key", "worker-test-key");
+        await LoginAsync(client, "create-reminder@example.com");
+        using var create = await client.PostAsJsonAsync("/api/habits", new
+        {
+            name = "Чтение", daysOfWeek = new[] { 1, 3 }, reminder = new { enabled = true, localTime = "00:15" }
+        });
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        var habit = create.Headers.Location!.OriginalString;
+        await AssertSettingsAsync(await client.GetAsync(habit + "/reminder"), true, "00:15");
+        var page = await ReadAsync(await client.GetAsync("/internal/v1/habit-schedules"));
+        var snapshot = Assert.Single(page["items"]!.AsArray())!;
+        Assert.Equal("2026-11-03", snapshot["reminderFirstEligibleDate"]?.GetValue<string>());
+        var check = $"/internal/v1/users/{snapshot["userId"]}/habits/{snapshot["habitId"]}/reminder?date=";
+
+        Assert.False((await ReadAsync(await client.GetAsync(check + "2026-11-02")))["eligible"]!.GetValue<bool>());
+        app.Clock.Now = app.Clock.Now.AddDays(2);
+        var mark = habit + "/completions/2026-11-04";
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync(mark, null)).StatusCode);
+        Assert.False((await ReadAsync(await client.GetAsync(check + "2026-11-04")))["eligible"]!.GetValue<bool>());
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(mark)).StatusCode);
+        Assert.True((await ReadAsync(await client.GetAsync(check + "2026-11-04")))["eligible"]!.GetValue<bool>());
+    }
+
+    [MongoFact]
+    public async Task InvalidReminderOnCreate_LeavesNoHabit()
+    {
+        using var app = new HabitsApplication();
+        using var client = app.CreateClient();
+        await LoginAsync(client, "invalid-reminder@example.com");
+        using var create = await client.PostAsJsonAsync("/api/habits", new
+        {
+            name = "Чтение", daysOfWeek = new[] { 1 }, reminder = new { enabled = true, localTime = "25:00" }
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, create.StatusCode);
+        Assert.Empty((await ReadAsync(await client.GetAsync("/api/habits")))["items"]!.AsArray());
+    }
+
+    [MongoFact]
+    public async Task DailySummaryDisabled_HidesSettingsAndSuppressesPreviouslyEnabledSummary()
+    {
+        using var app = new HabitsApplication(dailySummaryEnabled: false);
+        using var client = app.CreateClient();
+        await LoginAsync(client, "disabled-summary@example.com");
+        client.DefaultRequestHeaders.Add("X-Worker-Key", "worker-test-key");
+        var users = app.Services.GetRequiredService<IMongoDatabase>().GetCollection<BsonDocument>("users");
+        await users.UpdateOneAsync(FilterDefinition<BsonDocument>.Empty,
+            Builders<BsonDocument>.Update.Set("summaryEnabled", true).Set("summaryLocalTime", "00:00"));
+        var page = await ReadAsync(await client.GetAsync("/internal/v1/summary-schedules"));
+        var owner = Assert.Single(page["items"]!.AsArray())!;
+        Assert.True(owner["enabled"]!.GetValue<bool>());
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/profile/summary-settings")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PutAsJsonAsync("/api/profile/summary-settings",
+            new { enabled = false, localTime = "21:00" })).StatusCode);
+        var eligibility = await ReadAsync(await client.GetAsync($"/internal/v1/users/{owner["userId"]}/summary?date=2026-11-02"));
+        Assert.False(eligibility["eligible"]!.GetValue<bool>());
+        var habit = await CreateHabitAsync(client);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(habit + "/reminder")).StatusCode);
+    }
+
+    [MongoFact]
     public async Task WorkerPages_RequireKeyAndIncludeDisabledAndArchivedSchedules()
     {
         using var app = new HabitsApplication();
@@ -88,6 +152,7 @@ public sealed partial class HabitsHttpTests
         Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync(habit + "/completions/2026-11-02", null)).StatusCode);
         var marked = await ReadAsync(await client.GetAsync(check + today));
         Assert.False(marked["eligible"]!.GetValue<bool>());
+        Assert.Equal(DateTimeOffset.Parse("2026-11-01T20:00:00Z"), marked["scheduledDueAtUtc"]?.GetValue<DateTimeOffset>());
         Assert.Equal(2L, marked["revision"]!.GetValue<long>());
         summary = await ReadAsync(await client.GetAsync(prefix + "/summary" + today));
         Assert.Equal(1, summary["planned"]!.GetValue<int>());
@@ -119,17 +184,22 @@ public sealed partial class HabitsHttpTests
         var snapshot = Assert.Single(page["items"]!.AsArray())!;
         var check = $"/internal/v1/users/{snapshot["userId"]}/habits/{snapshot["habitId"]}/reminder?date=2026-11-02";
         await AssertSettingsAsync(await client.PutAsJsonAsync(habit + "/reminder",
-            new { enabled = true, localTime = "00:00" }), true, "00:00");
+            new { enabled = true, localTime = "00:30" }), true, "00:30");
         var initial = await ReadAsync(await client.GetAsync(check));
         Assert.True(initial["eligible"]!.GetValue<bool>());
 
+        var mark = habit + "/completions/2026-11-02";
+        Assert.Equal(HttpStatusCode.NoContent, (await client.PutAsync(mark, null)).StatusCode);
         await AssertSettingsAsync(await client.PutAsJsonAsync(habit + "/reminder",
             new { enabled = true, localTime = "01:15" }), true, "01:15");
         var moved = await ReadAsync(await client.GetAsync(check));
         Assert.False(moved["eligible"]!.GetValue<bool>());
-        Assert.Equal("notDueYet", moved["reason"]!.GetValue<string>());
+        Assert.Equal("notDueYet", moved["reason"]?.GetValue<string>());
         Assert.Equal(DateTimeOffset.Parse("2026-11-01T20:15:00Z"), moved["nextDueAtUtc"]!.GetValue<DateTimeOffset>());
-        Assert.Equal(initial["revision"]!.GetValue<long>() + 1, moved["revision"]!.GetValue<long>());
+        Assert.Equal(initial["revision"]!.GetValue<long>() + 2, moved["revision"]!.GetValue<long>());
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(mark)).StatusCode);
+        app.Clock.Now = app.Clock.Now.AddMinutes(45);
+        Assert.True((await ReadAsync(await client.GetAsync(check)))["eligible"]!.GetValue<bool>());
     }
 
     [MongoFact]
@@ -145,7 +215,7 @@ public sealed partial class HabitsHttpTests
         var prefix = $"/internal/v1/users/{snapshot["userId"]}";
         var reminder = $"{prefix}/habits/{snapshot["habitId"]}/reminder";
         await AssertSettingsAsync(await client.PutAsJsonAsync(habit + "/reminder",
-            new { enabled = true, localTime = "00:00" }), true, "00:00");
+            new { enabled = true, localTime = "00:30" }), true, "00:30");
         await AssertSettingsAsync(await client.PutAsJsonAsync("/api/profile/summary-settings",
             new { enabled = true, localTime = "01:00" }), true, "01:00");
 

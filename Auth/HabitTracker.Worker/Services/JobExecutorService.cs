@@ -101,6 +101,12 @@ public sealed class JobExecutorService(
 
     private async Task ExecuteOwnedAsync(Job job, CancellationToken ct)
     {
+        if (job.Kind == JobKind.DailySummary && !options.Value.DailySummaryEnabled)
+        {
+            await FinishAsync(job, JobStatus.Skipped, "daily_summary_disabled", ct);
+            return;
+        }
+
         var zone = await GetTimeZoneAsync(job, ct);
         var requestStarted = clock.GetUtcNow();
         if (!IsJobDate(job, zone, requestStarted))
@@ -158,7 +164,8 @@ public sealed class JobExecutorService(
                 await RetryAsync(job, zone, next, "notDueYet", ct, revision: result.Revision);
         }
         else
-            await FinishAsync(job, JobStatus.Skipped, "ineligible", ct, revision: result.Revision);
+            await FinishAsync(job, JobStatus.Skipped, "ineligible", ct, revision: result.Revision,
+                scheduledDueAtUtc: result.ScheduledDueAtUtc);
     }
 
     private async Task<Eligibility> ReadEligibilityAsync(Job job, CancellationToken ct)
@@ -170,7 +177,7 @@ public sealed class JobExecutorService(
             return new(answer.Revision, answer.NextDueAtUtc, answer.Eligible
                 ? new NotificationReadyV1(Guid.NewGuid(), now, Correlation(job), job.Id, job.UserId,
                     job.Kind, job.LocalDate, now, HabitId: job.HabitKey, HabitName: answer.HabitName)
-                : null);
+                : null, answer.ScheduledDueAtUtc?.UtcDateTime);
         }
 
         var summary = await api.SummaryAsync(job.UserId, job.LocalDate, ct);
@@ -216,12 +223,12 @@ public sealed class JobExecutorService(
     }
 
     private async Task FinishAsync(Job job, string status, string reason, CancellationToken ct,
-        int? failures = null, long? revision = null)
+        int? failures = null, long? revision = null, DateTime? scheduledDueAtUtc = null)
     {
         await transactions.RunAsync(async session =>
         {
             var finished = await jobs.FinishAsync(session, job.Id, Owner, job.LeaseVersion,
-                clock.GetUtcNow().UtcDateTime, status, reason, ct, failures, revision);
+                clock.GetUtcNow().UtcDateTime, status, reason, ct, failures, revision, scheduledDueAtUtc);
             if (!finished)
                 throw new LeaseLostException();
             return true;
@@ -249,5 +256,6 @@ public sealed class JobExecutorService(
     private static Guid Correlation(Job job) =>
         job.LastCorrelationId is { } id && id != Guid.Empty ? id : Guid.NewGuid();
 
-    private sealed record Eligibility(long Revision, DateTimeOffset? NextDueAt, NotificationReadyV1? Notification);
+    private sealed record Eligibility(long Revision, DateTimeOffset? NextDueAt, NotificationReadyV1? Notification,
+        DateTime? ScheduledDueAtUtc = null);
 }

@@ -19,11 +19,13 @@ public sealed class HabitService(IHabitRepository repository, IUserRepository us
     public async Task<HabitResponse> CreateAsync(User owner, HabitRequest request, CancellationToken ct)
     {
         var fields = Validate(request);
+        var reminder = request.Reminder?.Validate() ?? new NotificationSettings(false, "20:00");
         var habit = await repository.CreateAsync(OwnerId(owner), profile =>
         {
             var now = clock.GetUtcNow();
             var timestamp = ToStoredTimestamp(now);
-            var start = Format(LocalDate(profile ?? throw HabitApiException.Unauthenticated(), now));
+            var ownerProfile = profile ?? throw HabitApiException.Unauthenticated();
+            var start = Format(LocalDate(ownerProfile, now));
             return new Habit
             {
                 Id = ObjectId.GenerateNewId(),
@@ -32,6 +34,9 @@ public sealed class HabitService(IHabitRepository repository, IUserRepository us
                 Description = fields.Description,
                 StartDate = start,
                 ScheduleVersions = [new(start, fields.Days)],
+                ReminderEnabled = reminder.Enabled,
+                ReminderLocalTime = reminder.LocalTime,
+                ReminderFirstEligibleDate = reminder.FirstEligibleDate(now, ownerProfile.TimeZoneId),
                 CreatedAt = timestamp,
                 UpdatedAt = timestamp
             };

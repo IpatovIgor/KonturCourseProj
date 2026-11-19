@@ -13,7 +13,10 @@ public sealed record HabitScheduleSnapshot(
     [property: JsonRequired] ScheduleVersionSnapshot[] ScheduleVersions,
     [property: JsonRequired] string TimeZoneId,
     [property: JsonRequired] bool ReminderEnabled,
-    [property: JsonRequired] string ReminderLocalTime);
+    [property: JsonRequired] string ReminderLocalTime)
+{
+    public string? ReminderFirstEligibleDate { get; init; }
+}
 
 public sealed record ScheduleVersionSnapshot([property: JsonRequired] string EffectiveFrom, [property: JsonRequired] int[] DaysOfWeek);
 
@@ -31,6 +34,7 @@ public sealed record ReminderEligibility(
 {
     public string? Reason { get; init; }
     public DateTimeOffset? NextDueAtUtc { get; init; }
+    public DateTimeOffset? ScheduledDueAtUtc { get; init; }
 }
 
 public sealed record SummaryEligibility(

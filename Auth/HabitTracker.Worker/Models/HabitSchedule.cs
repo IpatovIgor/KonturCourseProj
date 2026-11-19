@@ -32,6 +32,9 @@ public sealed class HabitSchedule
     [BsonElement("reminderLocalTime")]
     public required string ReminderLocalTime { get; init; }
 
+    [BsonElement("reminderFirstEligibleDate"), BsonIgnoreIfNull]
+    public string? ReminderFirstEligibleDate { get; init; }
+
     [BsonElement("nextDueAtUtc")]
     public DateTime? NextDueAtUtc { get; init; }
 

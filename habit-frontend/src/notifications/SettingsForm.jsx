@@ -6,7 +6,7 @@ import useQuery from '../useQuery.js'
 const unavailable = 'Настройка уведомлений недоступна.'
 const isUnavailable = (error) => error?.response?.status === 404
 
-export default function SettingsForm({ load, save, enabledLabel, saveLabel, readOnly = false }) {
+export default function SettingsForm({ load, save, enabledLabel, saveLabel, readOnly = false, disclosureTitle }) {
   const query = useQuery(load)
   const [draft, setDraft] = useState(null)
   const [feedback, setFeedback] = useState({})
@@ -43,9 +43,9 @@ export default function SettingsForm({ load, save, enabledLabel, saveLabel, read
     }
   }
 
-  if (isUnavailable(query.error)) return <p className="muted">{unavailable}</p>
-  if (!values) return <QueryState query={query} />
-  return (
+  if (isUnavailable(query.error)) return disclosureTitle ? null : <p className="muted">{unavailable}</p>
+  if (!values && disclosureTitle && query.loading) return null
+  const content = !values ? <QueryState query={query} /> : (
     <form className="form-stack" onSubmit={submit}>
       <label className="notification-checkbox">
         <input type="checkbox" checked={values.enabled} disabled={saving || readOnly} onChange={(event) => change({ enabled: event.target.checked })} />
@@ -60,4 +60,10 @@ export default function SettingsForm({ load, save, enabledLabel, saveLabel, read
       {!readOnly && <div className="actions"><button type="submit" disabled={saving}>{saveLabel}</button></div>}
     </form>
   )
+  return disclosureTitle ? (
+    <details className="panel notification-panel">
+      <summary>{disclosureTitle}</summary>
+      {content}
+    </details>
+  ) : content
 }

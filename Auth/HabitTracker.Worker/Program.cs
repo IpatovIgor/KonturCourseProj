@@ -18,6 +18,7 @@ builder.Services.AddOptions<WorkerOptions>()
     {
         options.BaseUrl = config["WorkerApi:BaseUrl"] ?? "";
         options.SharedKey = config["WorkerApi:SharedKey"] ?? "";
+        options.DailySummaryEnabled = config.GetValue("Features:DailySummaryEnabled", true);
     })
     .Validate(o => { o.Validate(); return true; })
     .ValidateOnStart();

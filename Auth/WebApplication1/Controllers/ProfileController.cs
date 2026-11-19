@@ -13,7 +13,7 @@ namespace BackEnd.Controllers;
 public sealed class ProfileController(HabitService habits, IUserRepository users) : ControllerBase
 {
     [HttpGet]
-    [NotificationSettingsEndpoint]
+    [NotificationSettingsEndpoint(dailySummary: true)]
     public async Task<NotificationSettings> Get(CancellationToken ct)
     {
         var owner = await habits.GetOwnerAsync(User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, ct);
@@ -21,7 +21,7 @@ public sealed class ProfileController(HabitService habits, IUserRepository users
     }
 
     [HttpPut]
-    [NotificationSettingsEndpoint]
+    [NotificationSettingsEndpoint(dailySummary: true)]
     public async Task<NotificationSettings> Put(NotificationSettingsRequest request, CancellationToken ct)
     {
         var owner = await habits.GetOwnerAsync(User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value, ct);

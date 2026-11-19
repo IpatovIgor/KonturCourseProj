@@ -1,12 +1,12 @@
 # Архитектура backend трекера привычек
 
-[Правила изменения кода](../AGENTS.md) · [HTTP API](api.md) · [Схема MongoDB](database.md)
+[Локальный стенд](../README.md) · [HTTP API](api.md) · [Схема MongoDB](database.md)
 
 ## Текущее состояние
 
-Решение `Auth/WebApplication1.sln` состоит из веб-приложения `WebApplication1` и проекта тестов `BackEnd.Tests`. В приложении на ASP.NET Core .NET 8 есть контроллер регистрации и входа, `AuthService` для BCrypt и выпуска JWT, `IUserRepository` и его реализация для MongoDB. При входе JWT содержит MongoDB ID пользователя в `sub`. `Program.cs` подключает аутентификацию, маршрутизацию контроллеров и Swagger для разработки. В тестах авторизации используются xUnit и Moq.
+В решении `Auth/WebApplication1.sln` три сервиса на .NET 8 и их тесты. WebAPI выдаёт JWT и обслуживает привычки. Worker читает события RabbitMQ, создаёт задания и проверяет подходящие привычки перед отправкой. Notifications записывает результат в свою MongoDB-базу и доставляет его React-клиенту через SignalR. MongoDB outbox связывает запись данных и публикацию событий.
 
-## Целевое устройство
+## WebAPI и запланированные расширения
 
 ```mermaid
 flowchart LR

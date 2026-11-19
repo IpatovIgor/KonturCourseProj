@@ -45,7 +45,8 @@ public sealed class JobExecutorRepository(IMongoDatabase database)
     // Терминальный переход (completed/skipped/failed). Fenced.
     public async Task<bool> FinishAsync(
         IClientSessionHandle session, Guid id, string owner, int leaseVersion, DateTime now,
-        string status, string? errorCode, CancellationToken ct, int? httpFailureCount = null, long? revision = null)
+        string status, string? errorCode, CancellationToken ct, int? httpFailureCount = null, long? revision = null,
+        DateTime? scheduledDueAtUtc = null)
     {
         var filter = OwnedRunning(id, owner, leaseVersion, now);
         var update = Builders<Job>.Update
@@ -58,6 +59,8 @@ public sealed class JobExecutorRepository(IMongoDatabase database)
             update = update.Set(x => x.HttpFailureCount, count);
         if (revision is { } checkedRevision)
             update = update.Set(x => x.ScheduleRevision, checkedRevision);
+        if (scheduledDueAtUtc is { } scheduled)
+            update = update.Set(x => x.ScheduledDueAtUtc, scheduled);
         var result = await _jobs.UpdateOneAsync(session, filter, update, cancellationToken: ct);
         return result.MatchedCount == 1;
     }
@@ -79,6 +82,8 @@ public sealed class JobExecutorRepository(IMongoDatabase database)
             update = update.Set(x => x.HttpFailureCount, count);
         if (revision is { } checkedRevision)
             update = update.Set(x => x.ScheduleRevision, checkedRevision);
+        if (errorCode == "notDueYet")
+            update = update.Set(x => x.ScheduledDueAtUtc, nextDueAtUtc);
         var result = await _jobs.UpdateOneAsync(session, filter, update, cancellationToken: ct);
         return result.MatchedCount == 1;
     }

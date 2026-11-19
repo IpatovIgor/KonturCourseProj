@@ -157,6 +157,7 @@ describe('notification settings', () => {
         .mockResolvedValue({ enabled: true, localTime: '20:05' }),
     }
     render(<SummarySettings api={api} />)
+    fireEvent.click(await screen.findByText('Дневная сводка'))
     const time = await screen.findByLabelText('Местное время аккаунта')
     expect(time.value).toBe('21:00')
     fireEvent.click(screen.getByLabelText('Показывать дневную сводку'))
@@ -170,10 +171,10 @@ describe('notification settings', () => {
     expect(time.value).toBe('20:05')
   })
 
-  it('reports settings disabled by the server instead of offering a save', async () => {
+  it('omits the summary section when the server disables it', async () => {
     const api = { getSummary: vi.fn().mockRejectedValue({ response: { status: 404 } }) }
-    render(<SummarySettings api={api} />)
-    expect(await screen.findByText('Настройка уведомлений недоступна.')).toBeTruthy()
-    expect(screen.queryByText('Сохранить сводку')).toBeNull()
+    await act(async () => render(<SummarySettings api={api} />))
+    expect(api.getSummary).toHaveBeenCalledOnce()
+    expect(screen.queryByText('Дневная сводка')).toBeNull()
   })
 })
