@@ -3,13 +3,13 @@ using MongoDB.Driver;
 
 namespace HabitTracker.Messaging;
 
-public sealed class MongoOutbox(IMongoDatabase database)
+public class MongoOutbox(IMongoDatabase database)
 {
     private readonly IMongoCollection<OutboxEvent> _events = database.GetCollection<OutboxEvent>("outboxEvents");
     private static readonly FilterDefinitionBuilder<OutboxEvent> Filter = Builders<OutboxEvent>.Filter;
     private static readonly UpdateDefinitionBuilder<OutboxEvent> Update = Builders<OutboxEvent>.Update;
 
-    public Task InsertAsync<T>(IClientSessionHandle session, T message, EventContext context, CancellationToken ct)
+    public virtual Task InsertAsync<T>(IClientSessionHandle session, T message, EventContext context, CancellationToken ct)
         where T : class, IVersionedEvent =>
         _events.InsertOneAsync(session, OutboxEvent.Create(message, context), cancellationToken: ct);
 
