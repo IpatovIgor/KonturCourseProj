@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: notifications
   namespace: habit-tracker
+  labels:
+    app: notifications
 spec:
   replicas: 1
   strategy:
@@ -15,15 +17,57 @@ spec:
       labels:
         app: notifications
     spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ycr-pull
       containers:
         - name: notifications
-          image: habit-tracker-notifications:local
+          image: cr.yandex/crp2k95esbq4ajsrt5d6/notifications:release-placeholder
           ports:
             - name: http
               containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
           envFrom:
-            - secretRef:
-                name: notifications
+            - configMapRef:
+                name: backend-config
+          env:
+            - name: MongoDbSettings__DatabaseName
+              value: "habit_tracker_notifications"
+            - name: MongoDbSettings__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-notifications
+                  key: uri
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-app
+                  key: password
+            - name: JwtSettings__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: jwt
+                  key: secret
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1654
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -33,13 +77,6 @@ spec:
             httpGet:
               path: /health/live
               port: http
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 1654
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-              add: ["NET_BIND_SERVICE"]
 ---
 apiVersion: v1
 kind: Service

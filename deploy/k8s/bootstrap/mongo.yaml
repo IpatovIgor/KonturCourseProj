@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-bootstrap
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: mongo-bootstrap
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: mongo:8.0@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+          command: [mongosh, --nodb, --quiet, --file, /bootstrap/init-mongo.js]
+          env:
+            - name: MONGO_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-admin
+                  key: password
+            - name: MONGO_WEBAPI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-webapi
+                  key: password
+            - name: MONGO_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-worker
+                  key: password
+            - name: MONGO_NOTIFICATIONS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-notifications
+                  key: password
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: mongo-bootstrap

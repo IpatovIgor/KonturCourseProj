@@ -1,1 +1,2 @@
 deploy/rabbitmq/*.sh text eol=lf
+deploy/k8s/*.sh text eol=lf
