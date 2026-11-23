@@ -51,7 +51,10 @@ jobs:
         with:
           context: ./Auth
           file: Auth/WebApplication1/Dockerfile
-          push: true
+          # Yandex Container Registry rejected the OCI index with attestations.
+          outputs: type=image,push=true,oci-mediatypes=false
+          provenance: false
+          sbom: false
           tags: ${{ env.REGISTRY }}/webapi:${{ github.sha }}
 
       - name: Publish Worker
@@ -60,7 +63,9 @@ jobs:
         with:
           context: ./Auth
           file: Auth/HabitTracker.Worker/Dockerfile
-          push: true
+          outputs: type=image,push=true,oci-mediatypes=false
+          provenance: false
+          sbom: false
           tags: ${{ env.REGISTRY }}/worker:${{ github.sha }}
 
       - name: Publish Notifications
@@ -69,7 +74,9 @@ jobs:
         with:
           context: .
           file: Auth/HabitTracker.Notifications/Dockerfile
-          push: true
+          outputs: type=image,push=true,oci-mediatypes=false
+          provenance: false
+          sbom: false
           tags: ${{ env.REGISTRY }}/notifications:${{ github.sha }}
 
       - name: Publish frontend
@@ -78,7 +85,9 @@ jobs:
         with:
           context: ./habit-frontend
           file: habit-frontend/Dockerfile
-          push: true
+          outputs: type=image,push=true,oci-mediatypes=false
+          provenance: false
+          sbom: false
           tags: ${{ env.REGISTRY }}/frontend:${{ github.sha }}
 
       - name: Record release digests
