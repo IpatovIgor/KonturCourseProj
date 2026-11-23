@@ -1,0 +1,90 @@
+name: Build and Deploy to k3s
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Auth/**"
+      - "habit-frontend/**"
+      - "deploy/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: cr.yandex/crp2k95esbq4ajsrt5d6
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Yandex Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: cr.yandex
+          username: json_key
+          password: ${{ secrets.YCR_PUSHER_KEY }}
+
+      - name: Build, push images and collect digests
+        id: build
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA::12}"
+
+          docker build -t "$REGISTRY/webapi:$TAG" -f Auth/WebApplication1/Dockerfile ./Auth
+          docker push "$REGISTRY/webapi:$TAG"
+          WEBAPI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/webapi:$TAG" | cut -d'@' -f2)
+
+          docker build -t "$REGISTRY/worker:$TAG" -f Auth/HabitTracker.Worker/Dockerfile ./Auth
+          docker push "$REGISTRY/worker:$TAG"
+          WORKER_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/worker:$TAG" | cut -d'@' -f2)
+
+          docker build -t "$REGISTRY/notifications:$TAG" -f Auth/HabitTracker.Notifications/Dockerfile .
+          docker push "$REGISTRY/notifications:$TAG"
+          NOTIFICATIONS_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/notifications:$TAG" | cut -d'@' -f2)
+
+          docker build -t "$REGISTRY/frontend:$TAG" -f habit-frontend/Dockerfile ./habit-frontend
+          docker push "$REGISTRY/frontend:$TAG"
+          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/frontend:$TAG" | cut -d'@' -f2)
+
+          echo "webapi=$WEBAPI_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "worker=$WORKER_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "notifications=$NOTIFICATIONS_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "frontend=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' '${{ secrets.KUBECONFIG }}' > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Render and apply release
+        run: |
+          set -euo pipefail
+          kubectl apply -k deploy/k8s/infra
+          bash deploy/k8s/render-release.sh \
+            "${{ steps.build.outputs.webapi }}" \
+            "${{ steps.build.outputs.worker }}" \
+            "${{ steps.build.outputs.notifications }}" \
+            "${{ steps.build.outputs.frontend }}" > habit-tracker-release.yaml
+
+          kubectl apply --dry-run=server -f habit-tracker-release.yaml
+          kubectl apply -f habit-tracker-release.yaml
+
+          for app in webapi worker notifications frontend; do
+            kubectl -n habit-tracker rollout status "deployment/$app" --timeout=300s
+          done
+
+      - name: Verify HTTPS endpoint
+        run: |
+          curl -fsSI https://duckdns.org

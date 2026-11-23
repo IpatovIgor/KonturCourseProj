@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-peer
+spec:
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+    - name: management
+      port: 15672
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+spec:
+  serviceName: rabbitmq-peer
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4.1-management@sha256:479361ae8fbb8c852bf67f4acbbfa6f3f6810f8f08119ae6ad4d922bfeaa27c3
+          env:
+            - name: RABBITMQ_NODENAME
+              value: rabbit@rabbitmq-0
+            - name: RABBITMQ_DEFAULT_VHOST
+              value: habit-tracker
+            - name: RABBITMQ_DEFAULT_USER
+              value: habit-admin
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-admin
+                  key: password
+            - name: HABIT_RABBIT_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-app
+                  key: password
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            tcpSocket:
+              port: amqp
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: amqp
+          livenessProbe:
+            tcpSocket:
+              port: amqp
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+            - name: topology
+              mountPath: /etc/rabbitmq/habit-tracker
+              readOnly: true
+      volumes:
+        - name: topology
+          configMap:
+            name: rabbitmq-topology
+            items:
+              - key: definitions.json
+                path: definitions.json
+              - key: bootstrap.sh
+                path: bootstrap.sh
+              - key: bootstrap-k8s.sh
+                path: bootstrap-k8s.sh
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi

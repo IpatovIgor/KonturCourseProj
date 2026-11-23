@@ -1,0 +1,247 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapi
+  namespace: habit-tracker
+  labels:
+    app: webapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapi
+  template:
+    metadata:
+      labels:
+        app: webapi
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ycr-pull
+      containers:
+        - name: webapi
+          image: cr.yandex/crp2k95esbq4ajsrt5d6/webapi:release-placeholder
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            - name: MongoDbSettings__DatabaseName
+              value: "habit_tracker_auth"
+            - name: MongoDbSettings__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-webapi
+                  key: uri
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-app
+                  key: password
+            - name: MongoDbSettings__UsersCollectionName
+              value: "users"
+            - name: Http__UseHttpsRedirection
+              value: "false"
+            - name: WorkerApi__SharedKey
+              valueFrom:
+                secretKeyRef:
+                  name: worker-api
+                  key: key
+            - name: JwtSettings__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: jwt
+                  key: secret
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1654
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapi
+  namespace: habit-tracker
+spec:
+  selector:
+    app: webapi
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: habit-tracker
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ycr-pull
+      containers:
+        - name: worker
+          image: cr.yandex/crp2k95esbq4ajsrt5d6/worker:release-placeholder
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            - name: MongoDbSettings__DatabaseName
+              value: "habit_tracker_worker"
+            - name: MongoDbSettings__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-worker
+                  key: uri
+            - name: RabbitMq__Password
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-app
+                  key: password
+            - name: WorkerApi__BaseUrl
+              value: "http://webapi"
+            - name: WorkerApi__SharedKey
+              valueFrom:
+                secretKeyRef:
+                  name: worker-api
+                  key: key
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1654
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: habit-tracker
+spec:
+  selector:
+    app: worker
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: habit-tracker
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ycr-pull
+      containers:
+        - name: frontend
+          image: cr.yandex/crp2k95esbq4ajsrt5d6/frontend:release-placeholder
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: habit-tracker
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

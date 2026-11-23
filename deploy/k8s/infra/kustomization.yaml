@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: habit-tracker
+resources:
+  - namespace.yaml
+  - mongo.yaml
+  - rabbitmq.yaml
+  - network-policies.yaml
+configMapGenerator:
+  - name: backend-config
+    literals:
+      - ASPNETCORE_HTTP_PORTS=80
+      - JwtSettings__Issuer=HabitTrackerAuthService
+      - JwtSettings__Audience=HabitTrackerClient
+      - RabbitMq__Host=rabbitmq
+      - RabbitMq__VirtualHost=habit-tracker
+      - RabbitMq__Username=habit-tracker-app
+      - Features__NotificationsEnabled=true
+      - Features__DailySummaryEnabled=false
+generatorOptions:
+  disableNameSuffixHash: true

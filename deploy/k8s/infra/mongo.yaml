@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-peer
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: mongo
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  selector:
+    app: mongo
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+spec:
+  serviceName: mongo-peer
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: prepare-keyfile
+          image: mongo:8.0@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+          command:
+            - sh
+            - -ec
+            - install -o mongodb -g mongodb -m 0400 /secret/keyfile /keyfile/keyfile
+          volumeMounts:
+            - name: keyfile-secret
+              mountPath: /secret
+              readOnly: true
+            - name: keyfile
+              mountPath: /keyfile
+      containers:
+        - name: mongo
+          image: mongo:8.0@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+          args: [mongod, --bind_ip_all, --replSet, rs0, --keyFile, /keyfile/keyfile]
+          ports:
+            - name: mongo
+              containerPort: 27017
+          resources:
+            requests:
+              cpu: 150m
+              memory: 384Mi
+            limits:
+              cpu: 800m
+              memory: 1Gi
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: habit-admin
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-admin
+                  key: password
+          startupProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: mongo
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - mongodb://127.0.0.1:27017/?directConnection=true
+                - --eval
+                - >-
+                  const h = db.hello(); quit(h.setName === 'rs0' && h.isWritablePrimary ? 0 : 1);
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: keyfile
+              mountPath: /keyfile
+              readOnly: true
+      volumes:
+        - name: keyfile
+          emptyDir:
+            medium: Memory
+        - name: keyfile-secret
+          secret:
+            secretName: mongo-keyfile
+            defaultMode: 0400
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
