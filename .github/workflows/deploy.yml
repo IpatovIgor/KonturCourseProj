@@ -2,13 +2,7 @@ name: Build and Deploy to k3s
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "Auth/**"
-      - "habit-frontend/**"
-      - "deploy/**"
-      - ".github/workflows/deploy.yml"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,14 +10,33 @@ permissions:
 
 env:
   REGISTRY: cr.yandex/crp2k95esbq4ajsrt5d6
+  KUBE_NAMESPACE: habit-tracker
+  APP_BASE_URL: https://habit-tracker.duckdns.org
 
 jobs:
-  deploy:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/webapi-tests.yml
+
+  publish:
+    needs: verify
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 20
+    outputs:
+      webapi: ${{ steps.webapi.outputs.digest }}
+      worker: ${{ steps.worker.outputs.digest }}
+      notifications: ${{ steps.notifications.outputs.digest }}
+      frontend: ${{ steps.frontend.outputs.digest }}
     steps:
-      - name: Checkout repository
+      - name: Checkout the verified commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Yandex Container Registry
         uses: docker/login-action@v3
@@ -32,59 +45,179 @@ jobs:
           username: json_key
           password: ${{ secrets.YCR_PUSHER_KEY }}
 
-      - name: Build, push images and collect digests
-        id: build
+      - name: Publish WebAPI
+        id: webapi
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Auth
+          file: Auth/WebApplication1/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/webapi:${{ github.sha }}
+
+      - name: Publish Worker
+        id: worker
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Auth
+          file: Auth/HabitTracker.Worker/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/worker:${{ github.sha }}
+
+      - name: Publish Notifications
+        id: notifications
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Auth/HabitTracker.Notifications/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/notifications:${{ github.sha }}
+
+      - name: Publish frontend
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./habit-frontend
+          file: habit-frontend/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+
+      - name: Record release digests
+        env:
+          WEBAPI_DIGEST: ${{ steps.webapi.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+          NOTIFICATIONS_DIGEST: ${{ steps.notifications.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+        shell: bash
         run: |
-          set -euo pipefail
-          TAG="${GITHUB_SHA::12}"
+          printf 'commit=%s\n%s/webapi@%s\n%s/worker@%s\n%s/notifications@%s\n%s/frontend@%s\n' \
+            "$GITHUB_SHA" "$REGISTRY" "$WEBAPI_DIGEST" "$REGISTRY" "$WORKER_DIGEST" \
+            "$REGISTRY" "$NOTIFICATIONS_DIGEST" "$REGISTRY" "$FRONTEND_DIGEST" > release-digests.txt
 
-          docker build -t "$REGISTRY/webapi:$TAG" -f Auth/WebApplication1/Dockerfile ./Auth
-          docker push "$REGISTRY/webapi:$TAG"
-          WEBAPI_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/webapi:$TAG" | cut -d'@' -f2)
+      - name: Upload release digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-digests-${{ github.sha }}-${{ github.run_attempt }}
+          path: release-digests.txt
+          if-no-files-found: error
 
-          docker build -t "$REGISTRY/worker:$TAG" -f Auth/HabitTracker.Worker/Dockerfile ./Auth
-          docker push "$REGISTRY/worker:$TAG"
-          WORKER_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/worker:$TAG" | cut -d'@' -f2)
-
-          docker build -t "$REGISTRY/notifications:$TAG" -f Auth/HabitTracker.Notifications/Dockerfile .
-          docker push "$REGISTRY/notifications:$TAG"
-          NOTIFICATIONS_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/notifications:$TAG" | cut -d'@' -f2)
-
-          docker build -t "$REGISTRY/frontend:$TAG" -f habit-frontend/Dockerfile ./habit-frontend
-          docker push "$REGISTRY/frontend:$TAG"
-          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/frontend:$TAG" | cut -d'@' -f2)
-
-          echo "webapi=$WEBAPI_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "worker=$WORKER_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "notifications=$NOTIFICATIONS_DIGEST" >> "$GITHUB_OUTPUT"
-          echo "frontend=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
+  deploy:
+    needs: publish
+    runs-on: [self-hosted, linux, habit-tracker]
+    environment: production
+    concurrency:
+      group: habit-tracker-production
+      cancel-in-progress: false
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the verified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
+        with:
+          version: v1.37.2
 
-      - name: Configure kubeconfig
+      - name: Roll out the verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG }}
+          WEBAPI_DIGEST: ${{ needs.publish.outputs.webapi }}
+          WORKER_DIGEST: ${{ needs.publish.outputs.worker }}
+          NOTIFICATIONS_DIGEST: ${{ needs.publish.outputs.notifications }}
+          FRONTEND_DIGEST: ${{ needs.publish.outputs.frontend }}
+        shell: bash
         run: |
-          mkdir -p ~/.kube
-          printf '%s' '${{ secrets.KUBECONFIG }}' > ~/.kube/config
-          chmod 600 ~/.kube/config
+          main_sha=$(curl --fail --silent --show-error --max-time 20 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -er .object.sha)
+          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+            echo "Skipping release $GITHUB_SHA because main has advanced to $main_sha."
+            exit 0
+          fi
 
-      - name: Render and apply release
-        run: |
-          set -euo pipefail
-          kubectl apply -k deploy/k8s/infra
+          umask 077
+          scratch=$(mktemp -d "$RUNNER_TEMP/habit-tracker.XXXXXX")
+          export KUBECONFIG="$scratch/kubeconfig"
+          release="$scratch/release.yaml"
+          previous="$scratch/previous.json"
+          changed=false
+          apps=(notifications worker webapi frontend)
+
+          smoke() {
+            local path status
+            "${kube[@]}" wait --for=condition=Ready certificate/habit-tracker --timeout=180s || return 1
+            status=$(curl --silent --show-error --retry 3 --max-time 15 --output /dev/null \
+              --write-out '%{http_code}' "$APP_BASE_URL/") || return 1
+            if [[ "$status" != 200 ]]; then
+              echo "::error::Expected HTTP 200 for the frontend, got $status."
+              return 1
+            fi
+            for path in /api/habits /api/notifications; do
+              status=$(curl --silent --show-error --retry 3 --max-time 15 --output /dev/null \
+                --write-out '%{http_code}' "$APP_BASE_URL$path") || return 1
+              if [[ "$status" != 401 ]]; then
+                echo "::error::Expected HTTP 401 without a token at $path, got $status."
+                return 1
+              fi
+            done
+            return 0
+          }
+
+          cleanup() {
+            local status=$?
+            trap - EXIT
+            if (( status != 0 )) && [[ "$changed" == true ]]; then
+              echo "::error::Release failed. Restoring the previous application resources."
+              "${kube[@]}" get deployments,pods -o wide || true
+              "${kube[@]}" get events --field-selector type=Warning \
+                -o 'custom-columns=REASON:.reason,OBJECT:.involvedObject.name' || true
+              if "${kube[@]}" apply -f "$previous"; then
+                local restored=true
+                for app in "${apps[@]}"; do
+                  "${kube[@]}" rollout status "deployment/$app" --timeout=180s || restored=false
+                done
+                if [[ "$restored" == true ]] && smoke; then
+                  echo "Previous release is ready."
+                else
+                  echo "::error::Previous release did not pass readiness checks."
+                fi
+              else
+                echo "::error::Could not restore the previous application resources."
+              fi
+            fi
+            rm -f -- "$KUBECONFIG" "$release" "$previous"
+            rmdir -- "$scratch"
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          printf '%s\n' "${KUBECONFIG_CONTENT:?Set the KUBECONFIG secret to the raw YAML}" > "$KUBECONFIG"
+          unset KUBECONFIG_CONTENT
+          context=$(kubectl config current-context)
+          kube=(kubectl --context "$context" --namespace "$KUBE_NAMESPACE")
+
           bash deploy/k8s/render-release.sh \
-            "${{ steps.build.outputs.webapi }}" \
-            "${{ steps.build.outputs.worker }}" \
-            "${{ steps.build.outputs.notifications }}" \
-            "${{ steps.build.outputs.frontend }}" > habit-tracker-release.yaml
+            "$WEBAPI_DIGEST" "$WORKER_DIGEST" "$NOTIFICATIONS_DIGEST" "$FRONTEND_DIGEST" > "$release"
+          "${kube[@]}" apply --dry-run=server -f "$release"
 
-          kubectl apply --dry-run=server -f habit-tracker-release.yaml
-          kubectl apply -f habit-tracker-release.yaml
-
-          for app in webapi worker notifications frontend; do
-            kubectl -n habit-tracker rollout status "deployment/$app" --timeout=300s
+          # Bootstrap and stateful infrastructure are managed separately.
+          for app in "${apps[@]}"; do
+            "${kube[@]}" rollout status "deployment/$app" --timeout=60s
           done
+          "${kube[@]}" get -f "$release" -o json | jq -e '
+            .items |= map(del(.status, .metadata.uid, .metadata.resourceVersion,
+              .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields,
+              .metadata.annotations["deployment.kubernetes.io/revision"],
+              .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]))
+          ' > "$previous"
 
-      - name: Verify HTTPS endpoint
-        run: |
-          curl -fsSI https://duckdns.org
+          changed=true
+          for app in "${apps[@]}"; do
+            "${kube[@]}" apply -f "$release" -l "app=$app"
+            "${kube[@]}" rollout status "deployment/$app" --timeout=300s
+          done
+          "${kube[@]}" apply -f "$release" -l '!app'
+          smoke

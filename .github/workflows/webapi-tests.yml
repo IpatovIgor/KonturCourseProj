@@ -12,6 +12,7 @@ on:
       - 'compose.webapi-tests.yaml'
       - '.github/workflows/webapi-tests.yml'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
