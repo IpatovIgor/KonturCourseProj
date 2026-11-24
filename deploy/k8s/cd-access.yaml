@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: habit-tracker-cd
+  namespace: habit-tracker
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: habit-tracker-cd
+  namespace: habit-tracker
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [webapi, worker, notifications, frontend]
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [webapi, worker, notifications, frontend]
+    verbs: [get, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    resourceNames: [habit-tracker, habit-tracker-http, habit-tracker-notifications-hub]
+    verbs: [get, patch]
+  - apiGroups: [traefik.io]
+    resources: [middlewares]
+    resourceNames: [redirect-to-https]
+    verbs: [get, patch]
+  - apiGroups: [cert-manager.io]
+    resources: [issuers]
+    resourceNames: [letsencrypt]
+    verbs: [get, patch]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get, list, watch]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    resourceNames: [habit-tracker]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: habit-tracker-cd
+  namespace: habit-tracker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: habit-tracker-cd
+subjects:
+  - kind: ServiceAccount
+    name: habit-tracker-cd
+    namespace: habit-tracker

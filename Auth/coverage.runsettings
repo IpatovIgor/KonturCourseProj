@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <Include>[WebApplication1]*,[HabitTracker.Worker]*,[HabitTracker.Notifications]*,[HabitTracker.Contracts]*,[HabitTracker.Messaging]*</Include>
+          <ExcludeByFile>**/Program.cs,**/NotificationsApplication.cs,**/Configuration/*.cs,**/MongoDbSettings.cs,**/JwtSettings.cs,**/RabbitMqSettings.cs,**/*Dto.cs,**/*Dtos.cs,**/Health/*.cs,**/*ReadinessCheck.cs,**/*IndexInitializer.cs,**/*IndexStartup.cs,**/*.g.cs,**/*.g.i.cs</ExcludeByFile>
+          <ExcludeByAttribute>GeneratedCode,ExcludeFromCodeCoverage</ExcludeByAttribute>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

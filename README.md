@@ -22,3 +22,5 @@ docker compose ps
 Регрессионные тесты бэкенда запускаются на отдельной инфраструктуре по [инструкции](docs/webapi-testing.md). Для фронтенда из `habit-frontend` выполните `npm ci`, `npm test`, `npm run lint` и `npm run build`.
 
 [Контракт API](docs/api.md) · [Матрица приёмки](plan/07-ci-cd-and-acceptance.md) · [План облачной выкладки](plan/05-deployment.md)
+
+[Остановка и запуск облачного стенда](docs/stand-operations.md) · [Добавление и изменение модулей](docs/development.md)
