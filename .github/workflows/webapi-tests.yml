@@ -2,15 +2,7 @@ name: WebAPI tests
 
 on:
   pull_request:
-    paths:
-      - 'Auth/**'
-      - 'scripts/replay-message/**'
-      - 'habit-frontend/**'
-      - 'deploy/rabbitmq/**'
-      - 'deploy/k8s/habit-tracker-ingress.yaml'
-      - 'global.json'
-      - 'compose.webapi-tests.yaml'
-      - '.github/workflows/webapi-tests.yml'
+    branches: [main]
   workflow_dispatch:
   workflow_call:
 
@@ -20,7 +12,7 @@ permissions:
 jobs:
   webapi:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       KONTUR_TEST_MONGO_URI: 'mongodb://127.0.0.1:27142/?directConnection=true&replicaSet=rs0'
       KONTUR_TEST_RABBIT_URI: 'rabbitmq://127.0.0.1:5673'
@@ -31,6 +23,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
@@ -39,19 +32,53 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: habit-frontend/package-lock.json
+      - name: Build backend with Roslyn analyzers
+        run: dotnet build Auth/WebApplication1.sln -c Release -p:RunAnalyzersDuringBuild=true
+      - name: Verify formatting of changed C# files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          base="$BASE_SHA"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base=$(git rev-parse HEAD^)
+          fi
+          changed=$(mktemp)
+          trap 'rm -f -- "$changed"' EXIT
+          git diff -z --name-only --diff-filter=ACMRT "$base" HEAD -- ':(glob)Auth/**/*.cs' > "$changed"
+          mapfile -d '' -t files < "$changed"
+          if (( ${#files[@]} )); then
+            dotnet format Auth/WebApplication1.sln --verify-no-changes --no-restore --include "${files[@]}"
+          fi
+      - name: Run backend unit tests and collect coverage
+        shell: bash
+        run: |
+          for project in BackEnd.Tests HabitTracker.Notifications.Tests HabitTracker.Worker.Tests; do
+            dotnet test "Auth/$project" -c Release --no-build --filter 'Category!=Integration' \
+              --settings Auth/coverage.runsettings --collect 'XPlat Code Coverage' \
+              --logger 'trx;LogFileName=tests.trx' --results-directory "ci-results/unit/$project"
+          done
       - name: Start MongoDB and RabbitMQ
         run: docker compose -f compose.webapi-tests.yaml up -d --wait --wait-timeout 240
       - name: Check RabbitMQ bootstrap
         run: node deploy/rabbitmq/bootstrap.test.mjs
-      - name: Run WebAPI tests
-        run: dotnet test BackEnd.Tests -c Release
-        working-directory: Auth
-      - name: Run Notifications tests
-        run: dotnet test HabitTracker.Notifications.Tests -c Release
-        working-directory: Auth
-      - name: Run Worker tests
-        run: dotnet test HabitTracker.Worker.Tests -c Release
-        working-directory: Auth
+      - name: Run backend integration tests
+        shell: bash
+        run: |
+          for project in BackEnd.Tests HabitTracker.Notifications.Tests HabitTracker.Worker.Tests; do
+            dotnet test "Auth/$project" -c Release --no-build --filter 'Category=Integration' \
+              --logger 'trx;LogFileName=tests.trx' --results-directory "ci-results/integration/$project"
+          done
+      - name: Verify integration scenarios and unit coverage
+        env:
+          ENFORCE_COVERAGE: ${{ vars.KONTUR_ENFORCE_COVERAGE }}
+        shell: bash
+        run: |
+          args=(ci-results)
+          if [[ "$ENFORCE_COVERAGE" == true ]]; then
+            args+=(--enforce-coverage)
+          fi
+          python3 scripts/check-ci-results.py "${args[@]}"
       - name: Build RabbitMQ replay tool
         run: dotnet build scripts/replay-message -c Release
       - name: Check RabbitMQ replay routing
@@ -63,6 +90,20 @@ jobs:
           npm test
           npm run lint
           npm run build
+      - name: Build all four application images for pull requests
+        if: github.event_name == 'pull_request'
+        env:
+          HABIT_TRACKER_JWT_SECRET: ci-build-only
+          HABIT_TRACKER_WORKER_KEY: ci-build-only
+          HABIT_TRACKER_RABBIT_PASSWORD: ci-build-only
+        run: docker compose build
+      - name: Upload backend test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results-${{ github.run_attempt }}
+          path: ci-results/
+          if-no-files-found: warn
       - name: Show dependency logs on failure
         if: failure()
         run: docker compose -f compose.webapi-tests.yaml logs --tail 100

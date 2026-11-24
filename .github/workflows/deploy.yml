@@ -1,4 +1,4 @@
-name: Build and Deploy to k3s
+name: Prepare release for k3s
 
 on:
   push:
@@ -10,8 +10,6 @@ permissions:
 
 env:
   REGISTRY: cr.yandex/crp2k95esbq4ajsrt5d6
-  KUBE_NAMESPACE: habit-tracker
-  APP_BASE_URL: https://habit-tracker.duckdns.org
 
 jobs:
   verify:
@@ -24,10 +22,7 @@ jobs:
     environment: production
     timeout-minutes: 20
     outputs:
-      webapi: ${{ steps.webapi.outputs.digest }}
-      worker: ${{ steps.worker.outputs.digest }}
-      notifications: ${{ steps.notifications.outputs.digest }}
-      frontend: ${{ steps.frontend.outputs.digest }}
+      bundle: ${{ steps.bundle.outputs.name }}
     steps:
       - name: Checkout the verified commit
         uses: actions/checkout@v4
@@ -90,7 +85,13 @@ jobs:
           sbom: false
           tags: ${{ env.REGISTRY }}/frontend:${{ github.sha }}
 
-      - name: Record release digests
+      - name: Set up kubectl for manifest rendering
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.37.2
+
+      - name: Prepare release bundle
+        id: bundle
         env:
           WEBAPI_DIGEST: ${{ steps.webapi.outputs.digest }}
           WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
@@ -98,45 +99,46 @@ jobs:
           FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
         shell: bash
         run: |
+          mkdir release
+          bash deploy/k8s/render-release.sh \
+            "$WEBAPI_DIGEST" "$WORKER_DIGEST" "$NOTIFICATIONS_DIGEST" "$FRONTEND_DIGEST" \
+            > release/habit-tracker-release.yaml
+          cp deploy/k8s/apply-release.sh release/
           printf 'commit=%s\n%s/webapi@%s\n%s/worker@%s\n%s/notifications@%s\n%s/frontend@%s\n' \
             "$GITHUB_SHA" "$REGISTRY" "$WEBAPI_DIGEST" "$REGISTRY" "$WORKER_DIGEST" \
-            "$REGISTRY" "$NOTIFICATIONS_DIGEST" "$REGISTRY" "$FRONTEND_DIGEST" > release-digests.txt
+            "$REGISTRY" "$NOTIFICATIONS_DIGEST" "$REGISTRY" "$FRONTEND_DIGEST" > release/release-digests.txt
+          printf 'name=release-%s-%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release digests
+      - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:
-          name: release-digests-${{ github.sha }}-${{ github.run_attempt }}
-          path: release-digests.txt
+          name: ${{ steps.bundle.outputs.name }}
+          path: release/
           if-no-files-found: error
 
   deploy:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_OVER_SSH == 'true'
     needs: publish
-    runs-on: [self-hosted, linux, habit-tracker]
+    runs-on: ubuntu-latest
     environment: production
     concurrency:
       group: habit-tracker-production
       cancel-in-progress: false
     timeout-minutes: 45
     steps:
-      - name: Checkout the verified commit
-        uses: actions/checkout@v4
+      - name: Download the published release
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
+          name: ${{ needs.publish.outputs.bundle }}
+          path: release
 
-      - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.37.2
-
-      - name: Roll out the verified release
+      - name: Apply the verified release over SSH
         env:
           GH_TOKEN: ${{ github.token }}
-          KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG }}
-          WEBAPI_DIGEST: ${{ needs.publish.outputs.webapi }}
-          WORKER_DIGEST: ${{ needs.publish.outputs.worker }}
-          NOTIFICATIONS_DIGEST: ${{ needs.publish.outputs.notifications }}
-          FRONTEND_DIGEST: ${{ needs.publish.outputs.frontend }}
+          DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST || 'habit-tracker.duckdns.org' }}
+          DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         shell: bash
         run: |
           main_sha=$(curl --fail --silent --show-error --max-time 20 \
@@ -147,86 +149,29 @@ jobs:
             exit 0
           fi
 
+          if [[ ! "$DEPLOY_SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]; then
+            echo "Set DEPLOY_SSH_HOST to a DNS name or IPv4 address." >&2
+            exit 2
+          fi
+          if [[ ! "$DEPLOY_SSH_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( DEPLOY_SSH_PORT > 65535 )); then
+            echo "Set DEPLOY_SSH_PORT to a valid TCP port." >&2
+            exit 2
+          fi
+          grep -Fx "commit=$GITHUB_SHA" release/release-digests.txt
+
           umask 077
-          scratch=$(mktemp -d "$RUNNER_TEMP/habit-tracker.XXXXXX")
-          export KUBECONFIG="$scratch/kubeconfig"
-          release="$scratch/release.yaml"
-          previous="$scratch/previous.json"
-          changed=false
-          apps=(notifications worker webapi frontend)
+          credentials=$(mktemp -d "$RUNNER_TEMP/habit-tracker-ssh.XXXXXX")
+          trap 'rm -f -- "$credentials/key" "$credentials/known_hosts"; rmdir -- "$credentials"' EXIT
+          printf '%s\n' "${DEPLOY_SSH_KEY:?Set the DEPLOY_SSH_KEY secret}" | tr -d '\r' > "$credentials/key"
+          printf '%s\n' "${DEPLOY_SSH_KNOWN_HOSTS:?Set the verified SSH host key}" | tr -d '\r' > "$credentials/known_hosts"
+          unset DEPLOY_SSH_KEY
 
-          smoke() {
-            local path status
-            "${kube[@]}" wait --for=condition=Ready certificate/habit-tracker --timeout=180s || return 1
-            status=$(curl --silent --show-error --retry 3 --max-time 15 --output /dev/null \
-              --write-out '%{http_code}' "$APP_BASE_URL/") || return 1
-            if [[ "$status" != 200 ]]; then
-              echo "::error::Expected HTTP 200 for the frontend, got $status."
-              return 1
-            fi
-            for path in /api/habits /api/notifications; do
-              status=$(curl --silent --show-error --retry 3 --max-time 15 --output /dev/null \
-                --write-out '%{http_code}' "$APP_BASE_URL$path") || return 1
-              if [[ "$status" != 401 ]]; then
-                echo "::error::Expected HTTP 401 without a token at $path, got $status."
-                return 1
-              fi
-            done
-            return 0
-          }
-
-          cleanup() {
-            local status=$?
-            trap - EXIT
-            if (( status != 0 )) && [[ "$changed" == true ]]; then
-              echo "::error::Release failed. Restoring the previous application resources."
-              "${kube[@]}" get deployments,pods -o wide || true
-              "${kube[@]}" get events --field-selector type=Warning \
-                -o 'custom-columns=REASON:.reason,OBJECT:.involvedObject.name' || true
-              if "${kube[@]}" apply -f "$previous"; then
-                local restored=true
-                for app in "${apps[@]}"; do
-                  "${kube[@]}" rollout status "deployment/$app" --timeout=180s || restored=false
-                done
-                if [[ "$restored" == true ]] && smoke; then
-                  echo "Previous release is ready."
-                else
-                  echo "::error::Previous release did not pass readiness checks."
-                fi
-              else
-                echo "::error::Could not restore the previous application resources."
-              fi
-            fi
-            rm -f -- "$KUBECONFIG" "$release" "$previous"
-            rmdir -- "$scratch"
-            exit "$status"
-          }
-          trap cleanup EXIT
-
-          printf '%s\n' "${KUBECONFIG_CONTENT:?Set the KUBECONFIG secret to the raw YAML}" > "$KUBECONFIG"
-          unset KUBECONFIG_CONTENT
-          context=$(kubectl config current-context)
-          kube=(kubectl --context "$context" --namespace "$KUBE_NAMESPACE")
-
-          bash deploy/k8s/render-release.sh \
-            "$WEBAPI_DIGEST" "$WORKER_DIGEST" "$NOTIFICATIONS_DIGEST" "$FRONTEND_DIGEST" > "$release"
-          "${kube[@]}" apply --dry-run=server -f "$release"
-
-          # Bootstrap and stateful infrastructure are managed separately.
-          for app in "${apps[@]}"; do
-            "${kube[@]}" rollout status "deployment/$app" --timeout=60s
-          done
-          "${kube[@]}" get -f "$release" -o json | jq -e '
-            .items |= map(del(.status, .metadata.uid, .metadata.resourceVersion,
-              .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields,
-              .metadata.annotations["deployment.kubernetes.io/revision"],
-              .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]))
-          ' > "$previous"
-
-          changed=true
-          for app in "${apps[@]}"; do
-            "${kube[@]}" apply -f "$release" -l "app=$app"
-            "${kube[@]}" rollout status "deployment/$app" --timeout=300s
-          done
-          "${kube[@]}" apply -f "$release" -l '!app'
-          smoke
+          ssh_options=(-T -p "$DEPLOY_SSH_PORT" -i "$credentials/key"
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$credentials/known_hosts" -o GlobalKnownHostsFile=/dev/null
+            -o UpdateHostKeys=no -o ConnectTimeout=15
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+          destination="habit-deploy@$DEPLOY_SSH_HOST"
+          ssh -n "${ssh_options[@]}" "$destination" check
+          ssh "${ssh_options[@]}" "$destination" "deploy $GITHUB_SHA" \
+            < release/habit-tracker-release.yaml

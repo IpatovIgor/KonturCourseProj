@@ -1,14 +1,14 @@
 # CI/CD и приёмка — план реализации
 
-**Цель** — проверять каждый PR и доставлять проверенный коммит `main` на учебный стенд с возможностью отката.
+**Цель** — проверять каждый PR, автоматически публиковать образы проверенного коммита `main` и при включённом SSH-деплое выкатывать их на VM с возможностью отката. [Выкладка по SSH](../docs/deployment.md#подключить-выкладку-через-ssh) · [Ручная выкладка](../docs/deployment.md#обновить-приложение-из-артефакта)
 
 **Основа** — [требования курса и архитектура](README.md), [развёртывание](05-deployment.md), [телеметрия](06-observability.md).
 
 ## Что уже есть
 
-- [Текущий workflow](../.github/workflows/webapi-tests.yml) по имени `WebAPI tests` проверяет все три backend-проекта в Release. Он поднимает MongoDB replica set и RabbitMQ через тестовый Compose, ждёт готовности, проверяет bootstrap и replay RabbitMQ, запускает `npm ci`, тесты, линтер и сборку React. При сбое выводит логи зависимостей, а в конце удаляет тестовое окружение. Триггеры — PR с подходящими путями и ручной запуск.
-- В трёх тестовых проектах установлен Coverlet. Dockerfile четырёх приложений и их контексты сборки уже заданы в [`compose.yaml`](../compose.yaml). Сборка Docker-образов в CI, проверка порога покрытия, публикация образов и облачная выкладка остаются задачами этого этапа.
-- Наличие шагов подтверждено по YAML. Для подтверждения работы CI нужен успешный запуск в GitHub Actions со ссылкой на результат.
+- [WebAPI tests](../.github/workflows/webapi-tests.yml) проверяет backend и frontend для PR в `main` и по ручному запуску. Он запускает раздельные unit- и integration-тесты, проверяет обязательные сценарии по TRX и публикует отчёты. Для PR он также собирает четыре Docker-образа. Покрытие выше 60% проверяется в обязательном режиме после включения `KONTUR_ENFORCE_COVERAGE`.
+- [Prepare release for k3s](../.github/workflows/deploy.yml) вызывает этот же CI для итогового коммита `main`, публикует четыре образа по SHA и сохраняет манифесты и digest в артефакт. При включённом SSH-деплое отдельный GitHub-hosted job передаёт манифест на VM. Артефакт доступен для ручной выкладки.
+- Для подтверждения новой цепочки нужны успешный запуск в GitHub Actions, выкладка на стенд и проверка отката.
 
 ## CI для PR и `main`
 
@@ -21,7 +21,7 @@
 ## CD в Яндекс Облако
 
 - [ ] Создать `.github/workflows/deploy.yml` после успешного CI для `main`, с идентификатором проверенного коммита. Собрать образы из этого коммита или использовать сохранённые образы CI. Опубликовать тег SHA в Yandex Container Registry, сохранить digest и передать их job развёртывания.
-- [ ] Выполнять `kubectl` на выделенном self-hosted runner облачной VM. Runner запускает только доверенный workflow `main` и использует отдельный kubeconfig с правами на ресурсы приложения в `habit-tracker`. Облачные и Kubernetes-секреты создавать при bootstrap. Использовать GitHub Environment для настроек деплоя и ограничить параллельные выкладки одной на окружение.
+- [ ] Публиковать пакет релиза в GitHub Actions для доверенной ветки `main`. При включённой выкладке передавать манифест на VM через SSH с проверкой ключа сервера. На VM использовать отдельного пользователя и локальный kubeconfig в namespace `habit-tracker`. Держать ручное применение пакета доступным. На стенде применять один релиз за раз.
 - [ ] Применить манифесты с digest, дождаться rollout, проверить готовность pod и HTTPS. Запустить smoke-тест через публичный адрес с изолированным тестовым аккаунтом, проверить JWT, доступ к привычке и подключение Hub. При ошибке записать события кластера и журналы, развернуть предыдущий подтверждённый набор digest и снова проверить readiness.
 
 ## Матрица сценариев для спринтов
@@ -53,7 +53,8 @@
 | Создать / изменить | Назначение |
 |---|---|
 | `.github/workflows/webapi-tests.yml` | Дополнить существующие проверки сборкой solution, разделением unit и integration, отчётами и Docker build |
-| `.github/workflows/deploy.yml` | Только успешный проверенный main SHA → registry → rollout → smoke/rollback |
+| `.github/workflows/deploy.yml` | Только успешный проверенный main SHA → registry → пакет релиза → опциональный deploy по SSH |
+| `deploy/k8s/apply-release.sh` | Применение пакета → rollout, проверка HTTP и откат |
 | `Auth/coverage.runsettings` | Фильтры бизнес-логики, исключения startup/DTO/generated, формат покрытия |
 | `scripts/check-test-results.ps1` или `.py` | TRX: обязательные наборы найдены, не skipped, успешны |
 | `scripts/check-coverage.ps1` или `.py` | Числитель/знаменатель line coverage, строго >60 без округления |
@@ -70,7 +71,7 @@ checkout verified source
  ├─ frontend npm ci → lint → test → build
  └─ isolated Mongo replica set + Rabbit topology → integration + TRX gate
 все обязательные проверки успешны → Docker build четырёх образов
-main, тот же SHA → publish digests → deploy → readiness + smoke
+main, тот же SHA → publish digests → release artifact → SSH или ручное применение → readiness + smoke
 ```
 
 Текущий runner использует Linux, .NET 8 и Node.js 24. Сохранить соответствие SDK в `global.json`, Node.js в Dockerfile фронтенда и зависимостям в lockfile.
@@ -91,7 +92,7 @@ Unit прогон: `dotnet test Auth/WebApplication1.sln -c Release --filter "Ca
 
 ## Доставка только проверенного коммита
 
-Предложенные имена параметров окружения: `YC_REGISTRY_ID`, `K8S_NAMESPACE=habit-tracker`, `APP_BASE_URL`; секреты registry push и kubeconfig задаются через GitHub Environment/на доверенном runner. Формат credentials определяется выбранным способом аутентификации облака; не вставлять реальный JSON-ключ в YAML. Pull credential кластера отдельный от push credential workflow.
+Ключ публикации Registry и SSH-ключ выкладки задаются через GitHub Environment. Kubeconfig используется локально на VM. Pull credential кластера отдельный от push credential workflow.
 
 - В PR jobs достаточно `contents: read`, без cloud secrets. Не выполнять недоверенный код pull request на self-hosted runner и не использовать `pull_request_target` для запуска кода из fork с секретами.
 - Если deploy запускается через `workflow_run`, проверить conclusion success, исходную ветку main, доверенный репозиторий и checkout именно `head_sha` завершённого run. Нельзя взять текущую вершину main вместо проверенного SHA.

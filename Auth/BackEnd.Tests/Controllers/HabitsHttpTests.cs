@@ -15,6 +15,7 @@ using MongoDB.Driver;
 
 namespace BackEnd.Tests.Controllers;
 
+[Trait("Category", "Integration")]
 public sealed partial class HabitsHttpTests
 {
     [MongoFact]

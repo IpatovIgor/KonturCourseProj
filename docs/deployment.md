@@ -67,7 +67,85 @@ kubectl -n habit-tracker rollout status statefulset/mongo --timeout=120s
 
 MongoDB станет `Ready` после инициализации replica set заданием `mongo-bootstrap`. Job также создаёт три учётные записи с ролью `readWrite` на соответствующих базах. Задание RabbitMQ запускает существующую проверку топологии внутри pod и настраивает учётную запись AMQP. Его ServiceAccount имеет доступ к `exec` только в `rabbitmq-0`. При повторной инициализации удалите завершённые Jobs по имени и примените каталог `bootstrap` заново. PVC при этом сохраняются.
 
-## Приложения и HTTPS
+## Обновить приложение из артефакта
+
+После слияния в `main` workflow **Prepare release for k3s** повторно запускает CI, публикует четыре образа и готовит артефакт `release-<SHA>-<attempt>`. В нём есть `habit-tracker-release.yaml`, `release-digests.txt` и `apply-release.sh`. Открой успешный запуск в GitHub Actions и скачай артефакт из раздела **Artifacts**. [Скачивание артефактов GitHub Actions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+
+Включи VM и перенеси на неё распакованную папку релиза. Из PowerShell укажи путь к этой папке:
+
+```powershell
+$release = Read-Host 'Путь к распакованной папке release'
+ssh andrelin@153.51.174.162 'mkdir -p ~/habit-tracker/releases'
+scp -r "$release" andrelin@153.51.174.162:habit-tracker/releases/
+```
+
+На VM зайди в папку релиза. Для скрипта нужны `kubectl`, `jq` и `curl`. Проверь SHA в `release-digests.txt` и примени релиз:
+
+```bash
+cat release-digests.txt
+sudo env KUBECONFIG=/etc/rancher/k3s/k3s.yaml bash ./apply-release.sh
+```
+
+Скрипт предназначен для обновления уже работающего стенда. Он выполняет серверный dry-run, сохраняет предыдущие ресурсы приложения, обновляет приложения по порядку и проверяет сертификат, frontend и ответы защищённых API. При сбое скрипт пытается восстановить предыдущие ресурсы, а состояние подов и результат отката записывает в `deploy-diagnostics.log`. Дожидайся завершения одной выкладки перед началом следующей.
+
+Для проверки JWT, доставки через WebSocket и офлайн-истории запусти из корня репозитория на компьютере с Node.js 24:
+
+```bash
+npm --prefix habit-frontend ci
+node habit-frontend/scripts/smoke-release.mjs https://habit-tracker.duckdns.org/
+```
+
+Smoke-тест создаёт два технических аккаунта и архивирует созданные привычки после проверки. Аккаунты и история сохраняются. Если проверка выявила сбой, примени распакованный артефакт предыдущего успешного релиза.
+
+## Подключить выкладку через SSH
+
+GitHub-hosted runner скачивает артефакт проверенного SHA и передаёт манифест по SSH. На VM выделенный пользователь `habit-deploy` принимает команду `deploy <SHA>` и запускает установленный скрипт выкладки. Ключ допускает только проверку доступа и эту команду. Кластерные credentials хранятся на VM. Ручная выкладка из артефакта доступна как запасной путь.
+
+### Подготовить VM и SSH-ключ
+
+Из PowerShell в корне проекта создай отдельный ключ. Для автоматического запуска оставь пароль ключа пустым. Передай на VM файлы настройки и **публичную** часть ключа:
+
+```powershell
+$key = "$env:USERPROFILE\.ssh\habit-tracker-deploy"
+ssh-keygen -t ed25519 -C habit-tracker-deploy -f $key
+ssh andrelin@153.51.174.162 'mkdir -p ~/habit-tracker/ssh-setup'
+scp .\deploy\k8s\apply-release.sh .\deploy\k8s\receive-release.sh .\deploy\k8s\setup-ssh-deploy.sh .\deploy\k8s\cd-access.yaml "${key}.pub" andrelin@153.51.174.162:habit-tracker/ssh-setup/
+```
+
+На VM с уже запущенным стендом выполни:
+
+```bash
+cd ~/habit-tracker/ssh-setup
+sudo apt install -y jq curl
+sudo bash ./setup-ssh-deploy.sh ./habit-tracker-deploy.pub
+sudo cat /etc/ssh/ssh_host_ed25519_key.pub
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Скрипт создаёт пользователя без sudo, устанавливает команды и настраивает Kubernetes-доступ к существующим ресурсам приложения в `habit-tracker`. Используется временный токен ServiceAccount. Запрашивается срок семь суток, кластер может выдать токен на меньший срок. Для обновления токена повтори команду `setup-ssh-deploy.sh` с тем же публичным ключом. При изменении скрипта выкладки или списка ресурсов сначала обнови файлы настройки на VM и повтори установку.
+
+Проверь подключение из PowerShell. При первом подключении сверь отпечаток сервера с выводом `ssh-keygen -lf` на VM:
+
+```powershell
+ssh -i $key -o IdentitiesOnly=yes habit-deploy@habit-tracker.duckdns.org check
+```
+
+### Включить выкладку в GitHub
+
+Ограничь окружение `production` веткой `main`. Для SSH добавь секрет в это окружение, а переменные задай в настройках репозитория **Settings → Secrets and variables → Actions → Variables**. Workflow использует существующий секрет `YCR_PUSHER_KEY` для Container Registry.
+
+| Тип | Имя | Значение |
+|---|---|---|
+| Секрет окружения | `DEPLOY_SSH_KEY` | Содержимое приватного файла `habit-tracker-deploy` |
+| Переменная репозитория | `DEPLOY_SSH_KNOWN_HOSTS` | Строка `habit-tracker.duckdns.org ssh-ed25519 AAAA…` с публичным ключом хоста, полученным на VM |
+| Переменная репозитория | `DEPLOY_SSH_HOST` | По умолчанию `habit-tracker.duckdns.org`. Укажи адрес, если используешь другой |
+| Переменная репозитория | `DEPLOY_SSH_PORT` | По умолчанию `22`. Для другого порта запиши хост в known_hosts как `[имя-хоста]:порт` |
+
+GitHub-hosted runner должен иметь сетевой маршрут к SSH-порту. Проверка из PowerShell подтверждает доступ с твоего компьютера. Исходящие IP стандартных runner меняются, поэтому для ограниченного SSH-доступа используй согласованный сетевой маршрут, например VPN. [Сетевой доступ runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#ip-addresses)
+
+После настройки добавь **переменную репозитория** `DEPLOY_OVER_SSH=true`, включи VM и запусти **Prepare release for k3s** для `main`. Проверь результаты `verify`, `publish` и `deploy`. При выключенной VM можно поставить `DEPLOY_OVER_SSH=false`: тесты и публикация образов продолжатся, а артефакт останется доступным.
+
+## Первая выкладка и рендер по digest
 
 Соберите и опубликуйте образы `webapi`, `worker`, `notifications` и `frontend` проверенного коммита в указанном Registry. Передайте их digest в том же порядке. При необходимости укажите свой контакт в `spec.acme.email` в `deploy/k8s/certificates.yaml`.
 
